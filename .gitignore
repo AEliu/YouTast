@@ -17,6 +17,7 @@ VERIFICATION.md
 # Secrets, sessions, databases, logs and generated artifacts
 .env.*
 !.env.example
+!.env.*.example
 .dev.vars.*
 !.dev.vars.example
 *.pem
@@ -29,3 +30,16 @@ VERIFICATION.md
 *.db
 public/downloads/*.zip
 public/downloads/*.sha256
+
+# Local environments, editor state and credential exports
+venv/
+.venv-*/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.har
+*.session
+*.cookies
+.coverage
+htmlcov/
