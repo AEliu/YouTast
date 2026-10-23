@@ -1,5 +1,6 @@
 import test from "node:test";
 import {fastExecution} from './execution-fixture.mjs';
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 
@@ -27,12 +28,18 @@ async function request(
   });
   return response;
 }
-test("Full local flow: privacy, competing executors, leases, audio ranges, rotation and revocation", async () => {
+test("Full local flow: privacy, competing executors, leases, audio ranges, rotation and revocation", async context => {
+  const accounts=[];
+  if(/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)){
+    const sql=localDatabase(origin);
+    context.after(()=>cleanupLocalUsers({origin,sql,accounts}));
+  }
   let r = await request("/api/auth/register", {
     method: "POST",
     data: { username: `alice_${suffix}`, password, invite },
   });
   assert.equal(r.status, 200, await r.clone().text());
+  accounts.push({id:(await r.clone().json()).user.id,username:`alice_${suffix}`});
   const alice = r.headers.get("set-cookie").split(";")[0];
   await fastExecution(origin,alice);
   r = await request("/api/auth/register", {
@@ -40,6 +47,7 @@ test("Full local flow: privacy, competing executors, leases, audio ranges, rotat
     data: { username: `bob_${suffix}`, password, invite },
   });
   assert.equal(r.status, 200);
+  accounts.push({id:(await r.clone().json()).user.id,username:`bob_${suffix}`});
   const bob = r.headers.get("set-cookie").split(";")[0];
   r = await request("/api/channels", {
     cookie: alice,

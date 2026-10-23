@@ -2,7 +2,7 @@
 
 ## 环境与启动
 
-网页/API 需要 Node.js 22+、npm 和 Python 3.11+（`npm run check` 包含 Python 编译检查）。执行器及媒体测试还需 FFmpeg、FFprobe、`executor/requirements.txt`，以及 Node.js 22+ 或 Deno 2.3+。npm 使用提交的锁文件安装；Python 依赖目前是最低版本约束，不是完整锁定环境。
+网页/API 开发测试需要 Node.js 22.5+、npm（单元测试使用内置 SQLite）和 Python 3.11+（`npm run check` 包含 Python 编译检查）。执行器及媒体测试还需 FFmpeg、FFprobe、`executor/requirements.txt`，以及 Node.js 22+ 或 Deno 2.3+。npm 使用提交的锁文件安装；Python 依赖目前是最低版本约束，不是完整锁定环境。
 
 在仓库根目录执行，已有配置时不要重复复制覆盖：
 
@@ -93,3 +93,17 @@ node tests/channel_detail.mjs
 ## 验证记录
 
 每次交付记录：提交、日期、环境、命令、结果、模拟范围、残留和未验证项。截图与原始产物保存在被忽略的 `test-results/`，公共文档只保留脱敏摘要。历史验收与本轮重新验证分开记录，不能把旧 PID 或部署版本当成当前健康证明。
+
+
+## 账号安全与操作员恢复专项
+
+自助改密/管理员恢复需独立8794测试服务，使用 `.wrangler/password-state` 应用相同迁移与本地测试邀请口令后运行：
+
+```powershell
+$env:TEST_ORIGIN = 'http://127.0.0.1:8794'
+$env:TEST_PERSIST_TO = '.wrangler/password-state'
+npm run test:passwords
+npm run test:recovery
+```
+
+passwords专项按本轮身份清理普通账号，保留一个按状态目录区分的本地fixture管理员；恢复专项自行创建唯一一次性本地D1目录并在结束时删除，无需服务，不使用生产资源。Node单元中的旧密码登录竞态用例会暂停真实密码派生后的请求来验证会话保护。交互、边界与复验结果见[账号安全说明](ACCOUNT-SECURITY.md)。

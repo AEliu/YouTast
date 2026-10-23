@@ -1,10 +1,11 @@
 import {id,now,secret,passwordHash,hash,requireValue,HttpError} from './lib.js';
 import {seedLegacyInvite} from './invitations.js';
+import {resetPassword} from './passwords.js';
 const stmt=(env,sql,...args)=>env.DB.prepare(sql).bind(...args);
 const response=data=>Response.json(data,{headers:{'Cache-Control':'no-store'}});
 const audit=(env,actor,target,action,details)=>stmt(env,'INSERT INTO admin_audit(id,actor_id,target_id,action,details,created_at) VALUES(?,?,?,?,?,?)',id(),actor,target,action,JSON.stringify(details),now());
 const limit=value=>value===null||(Number.isSafeInteger(value)&&value>=0&&value<=1_000_000_000_000);
-export async function adminApi(request,env,url,user,readBody,storageSql) {
+export async function adminApi(request,env,url,user,readBody,storageSql,rateLimit) {
  requireValue(user.role==='admin',403,'仅管理员可访问');
  const path=url.pathname,method=request.method;
  if(path==='/api/admin/invitations'&&method==='GET') {
@@ -78,12 +79,17 @@ export async function adminApi(request,env,url,user,readBody,storageSql) {
   requireValue(result[0].meta.changes===1,409,'用户名已存在');
   return response({id:uid,username:b.username.toLowerCase(),password});
  }
- const match=path.match(/^\/api\/admin\/users\/([\w-]+)(?:\/(logout))?$/);
+ const match=path.match(/^\/api\/admin\/users\/([\w-]+)(?:\/(logout|password))?$/);
  if(match&&method==='POST') {
   const target=await stmt(env,'SELECT id FROM users WHERE id=?',match[1]).first();requireValue(target,404,'用户不存在');
   if(match[2]==='logout') {
    await env.DB.batch([stmt(env,'DELETE FROM sessions WHERE user_id=?',target.id),audit(env,user.id,target.id,'user.logout',{})]);
    return response({ok:true});
+  }
+  if(match[2]==='password'){
+   await rateLimit(request,env);
+   const password=await resetPassword(env,user,target.id,await readBody(request));
+   return response({ok:true,password});
   }
   const b=await readBody(request);
   requireValue(Object.keys(b).every(k=>['role','disabled','storage_limit_bytes','monthly_transfer_limit_bytes'].includes(k)),400,'未知用户设置');

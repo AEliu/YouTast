@@ -1,6 +1,7 @@
 import {audioMedia} from './audio.js';
 import {channelDetail} from './channel-detail.js';
 import {userCollection} from './listing.js';
+import {changePassword} from './passwords.js';
 import {adminApi} from "./admin.js";
 import {subscriptionPage} from './subscribe.js';
 import {seedLegacyInvite} from './invitations.js';
@@ -183,7 +184,7 @@ async function auth(request, env, path) {
       throw error;
     }
     requireValue(result?.id === uid, 409, "该用户名不可用");
-    user = { id: uid, username };
+    user = { id: uid, username, salt, password_hash:pass };
   } else {
     user = await stmt(
       env,
@@ -198,13 +199,16 @@ async function auth(request, env, path) {
     requireValue(!user.disabled,403,"账号已停用，请联系管理员");
   }
   const token = secret();
-  await stmt(
+  const session=await stmt(
     env,
-    "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
+    "INSERT INTO sessions(token_hash,user_id,expires_at) SELECT ?,id,? FROM users WHERE id=? AND salt=? AND password_hash=? AND disabled=0 RETURNING token_hash",
     await hash(token),
-    user.id,
     now() + 604800,
-  ).run();
+    user.id,
+    user.salt,
+    user.password_hash,
+  ).first();
+  requireValue(session,401,'账号凭据已变更，请重新登录');
   return json({ user: { id: user.id, username: user.username } }, 200, {
     "Set-Cookie": cookie(request, token, 604800),
   });
@@ -294,7 +298,12 @@ async function api(request, env, url) {
   )
     return auth(request, env, path);
   const user = await userFor(request, env);
-  if(path.startsWith("/api/admin/"))return adminApi(request,env,url,user,body,allStorageBytes);
+  if(path.startsWith("/api/admin/"))return adminApi(request,env,url,user,body,allStorageBytes,rateLimit);
+  if(path==='/api/auth/password'&&method==='POST'){
+    await rateLimit(request,env);
+    await changePassword(env,user,await body(request));
+    return json({ok:true},200,{'Set-Cookie':cookie(request,'',0)});
+  }
   if(path==='/api/execution-policy') {
     if(method==='GET')return json(await executionPolicy(env,user.id));
     if(method==='POST') {

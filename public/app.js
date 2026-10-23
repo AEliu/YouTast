@@ -176,7 +176,7 @@ function empty(text) {
 }
 async function loadAdmin(offset=adminData?.offset||0,search=adminData?.search||'',inviteOffset=adminData?.inviteOffset||0) {
  const [overview,list,invites]=await Promise.all([api('/api/admin/overview'),api(`/api/admin/users?offset=${offset}&search=${encodeURIComponent(search)}`),api(`/api/admin/invitations?offset=${inviteOffset}`)]);
- adminData={overview,...list,search,invites:invites.invitations,inviteOffset:invites.offset,inviteHasMore:invites.hasMore};if(view==='admin')render();
+ adminData={overview,currentUserId:data.user.id,...list,search,invites:invites.invitations,inviteOffset:invites.offset,inviteHasMore:invites.hasMore};if(view==='admin')render();
 }
 $('#content').addEventListener('submit',async event=>{
   if(event.target.matches('[data-list-search]')){
@@ -236,9 +236,24 @@ function formPreferences(form,channel=false) {
 const policyHelp='<p class="muted">最新 N 条按本频道全部来源合并后的发布时间选取，不给每个作者固定分配名额；自动排序会将不同来源按发布时间从新到旧混排；也可手动选择其他排序。旧音频退出列表后保留缓存，增加 N 可以重新显示。</p><details class="preference-help"><summary>数量范围与空间清理规则</summary><p>候选数量和最新N支持1–100；最新N设0关闭限制。保留天数0–3650（0永久），同步间隔1–168小时，RSS集数1–1000。频道中的数字留空则跟随用户默认。</p><p>会至少检查每个来源的N条候选，再合并筛选；作者取YouTube最新列表，playlist按列表顺序取候选。列表只有相对发布时间时按近似日期选择，完整信息回传后校准；没有日期的排后面。</p><p>自动空间清理默认关闭，只在用户设置开启。本人或全站空间不足时，优先清理本账号退出列表的音频，然后清理发布时间更早的音频；共享缓存的相关引用会一起清理，节目记录保留供手动重新生成。已有下载不会自动补抓；清理不减少已用流量，也不删除手机上的下载；RSS移出节目也不保证播放器删除收听历史。非0保留天数仍会按到期清理。</p><p>新节目默认使用M4A：优先原始AAC，只封装和写章节；无AAC则按转码码率编码。原始AAC可能比64kbps MP3更大；选“节省空间”始终按指定码率编码AAC。转AAC时，48kbps使用24kHz单声道，64/96kbps使用48kHz单声道（适合语音），128kbps保留最多双声道；免转码保留原声道、采样率和音量。已有音频不自动重做，音轨语言不随文字语言改变。标题/简介优先使用YouTube已提供的设置语言，没有则保留原文。</p></details>';
 
 function renderSettings() {
-  return `<form id="settings-form" class="settings-panel"><h2>用户默认偏好</h2><p>未单独覆盖的频道跟随这里的设置；已有频道的排序选择保留。</p><div class="settings-grid">${preferenceFields(data.settings)}</div>${policyHelp}<p class="muted">本月音频请求字节：${(data.transferBytes/1e6).toFixed(2)} MB / ${data.maxUserTransferBytes ? (data.maxUserTransferBytes/1e9)+' GB' : '不限'}。登录会话有效期为 7 天。YouTube cookies 仅在执行器机器保存，不属于网页用户设置。</p><p id="settings-error" class="error" role="alert"></p><button class="primary">保存默认设置</button></form>`;
+  return `<form id="settings-form" class="settings-panel"><h2>用户默认偏好</h2><p>未单独覆盖的频道跟随这里的设置；已有频道的排序选择保留。</p><div class="settings-grid">${preferenceFields(data.settings)}</div>${policyHelp}<p class="muted">本月音频请求字节：${(data.transferBytes/1e6).toFixed(2)} MB / ${data.maxUserTransferBytes ? (data.maxUserTransferBytes/1e9)+' GB' : '不限'}。登录会话有效期为 7 天。YouTube cookies 仅在执行器机器保存，不属于网页用户设置。</p><p id="settings-error" class="error" role="alert"></p><button class="primary">保存默认设置</button></form><form id="password-form" class="settings-panel"><h2>更改登录密码</h2><p class="muted">更改后将退出全部网页登录会话，请使用新密码重新登录。执行器密钥与私人订阅链接可在各自入口管理。</p><div class="settings-grid"><label>当前密码<input name="current_password" type="password" required minlength="12" maxlength="128" autocomplete="current-password"></label><label>新密码<input name="new_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label><label>再次输入新密码<input name="confirm_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label></div><p id="password-error" class="error" role="alert"></p><button class="primary">更新密码并退出登录</button></form>`;
 }
 $('#content').addEventListener('submit',async event=>{
+  if(event.target.id==='password-form'){
+    event.preventDefault();
+    const form=event.target,fields=new FormData(form),button=event.submitter;
+    $('#password-error').textContent='';
+    if(fields.get('new_password')!==fields.get('confirm_password')){$('#password-error').textContent='两次输入的新密码不一致';return;}
+    if(button)button.disabled=true;
+    try{
+      await api('/api/auth/password',{method:'POST',body:JSON.stringify({current_password:fields.get('current_password'),new_password:fields.get('new_password')})});
+      form.reset();
+      if(register)$('#auth-toggle').click();
+      showAuth();$('#login-form').reset();$('#auth-error').textContent='密码已更新，请使用新密码登录。';
+    }catch(e){$('#password-error').textContent=e.message;}
+    finally{if(button)button.disabled=false;}
+    return;
+  }
   if(event.target.id!=='settings-form')return;
   event.preventDefault();
   const button=event.target.querySelector('button');button.disabled=true;
@@ -409,6 +424,14 @@ $("#content").addEventListener("click", async (event) => {
         setTimeout(()=>openDialog('保存新账号凭据',`<p>用户名：${escape(result.username)}</p><p>密码仅显示一次：</p><code>${escape(result.password)}</code>`,'',()=>{}),0);
       });return;
     }
+    if(action==='admin-password'){
+      const target=adminData.users.find(u=>u.id===cid);
+      openDialog('重置用户密码',`<p>为「${escape(target.username)}」生成新随机密码，并退出其全部网页登录会话。密码仅显示一次，请通过可信方式交给账号使用者。执行器密钥与订阅链接需分别管理。</p><label>输入你的管理员密码确认<input name="current_password" type="password" required minlength="12" maxlength="128" autocomplete="current-password"></label>`,'生成新密码',async form=>{
+        const result=await api(`/api/admin/users/${cid}/password`,{method:'POST',body:JSON.stringify({current_password:form.get('current_password')})});
+        await loadAdmin();
+        return ()=>openDialog('保存新密码',`<p>账号：${escape(target.username)}</p><p>新密码仅本次显示，请提醒账号使用者登录后自行修改。</p><code>${escape(result.password)}</code>`,'',()=>{});
+      });return;
+    }
     if(action==='admin-logout') {
       confirmAction('强制退出登录',`将退出「${adminData.users.find(u=>u.id===cid).username}」的所有网页登录会话，执行器不受影响。`,async()=>{await api(`/api/admin/users/${cid}/logout`,{method:'POST'});await refresh();if(data?.user.role==='admin')await loadAdmin();});return;
     }
@@ -552,6 +575,7 @@ document.querySelectorAll("[data-view]").forEach(
 $("#new-channel").onclick = newChannel;
 $("#refresh").onclick = async()=>{await refresh();if(view==='admin'&&data?.user.role==='admin')await loadAdmin();};
 $(".dialog-close").onclick = () => $("#dialog").close();
+$('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog-fields').replaceChildren();});
 $("#auth-toggle").onclick = () => {
   register = !register;
   $("#invite-label").hidden = !register;
@@ -580,6 +604,7 @@ $("#login-form").onsubmit = async (event) => {
     });
     form.reset();
     await refresh();
+    if(view==='admin'&&data?.user.role==='admin')await loadAdmin();
   } catch (e) {
     $("#auth-error").textContent = e.message;
   } finally {
