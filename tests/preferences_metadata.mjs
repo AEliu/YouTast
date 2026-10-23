@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Isolated local API and real local D1/R2 only. No YouTube requests.
 import assert from 'node:assert/strict';

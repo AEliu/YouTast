@@ -36,7 +36,7 @@ class HealthTest(unittest.TestCase):
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.paths = []
         self.server.status = 200
-        self.raw = {"activeJobs": 0, "lastSeen": int(time.time()), "minimumProtocol": 2, "rateControlVersion": 1, "windowControlVersion": 1, "audioControlVersion": 1, "replayControlVersion": 1}
+        self.raw = {"activeJobs": 0, "lastSeen": int(time.time()), "minimumProtocol": 2, "rateControlVersion": 1, "windowControlVersion": 1, "audioControlVersion": 1, "replayControlVersion": 1, "discoveryControlVersion": 1}
         self.server.payload = json.dumps(self.raw).encode()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()

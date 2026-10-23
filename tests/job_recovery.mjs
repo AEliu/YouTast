@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local API regression: a recovered scan must not retain a stale failure reason.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";

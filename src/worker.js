@@ -9,6 +9,7 @@ import {executionPolicy,validateExecution} from './execution.js';
 import {reconcileWindow} from './episode-window.js';
 import {makeSpace,cleanupOverQuota} from './storage-policy.js';
 import {scanRecords} from './scan-records.js';
+import {validateInventory,inventoryBatch,acknowledgeInventory} from './source-discovery.js';
 import {
   now,
   id,
@@ -350,7 +351,7 @@ async function api(request, env, url) {
       ),
       stmt(
         env,
-        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version FROM executors WHERE user_id=? ORDER BY created_at DESC",
+        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version,discovery_control_version FROM executors WHERE user_id=? ORDER BY created_at DESC",
         user.id,
       ),
       stmt(
@@ -715,7 +716,7 @@ async function executorApi(request, env, url) {
     t = now();
   requireValue(request.method === "POST", 405, "仅支持 POST");
   if(path==='/api/executor/status') {
-    const status=await stmt(env,"SELECT id,name,last_seen AS lastSeen,rate_control_version AS rateControlVersion,window_control_version AS windowControlVersion,audio_control_version AS audioControlVersion,replay_control_version AS replayControlVersion,(SELECT COUNT(*) FROM jobs WHERE executor_id=executors.id AND user_id=? AND status='running' AND lease_until>?) AS activeJobs FROM executors WHERE id=?",executor.user_id,t,executor.id).first();
+    const status=await stmt(env,"SELECT id,name,last_seen AS lastSeen,rate_control_version AS rateControlVersion,window_control_version AS windowControlVersion,audio_control_version AS audioControlVersion,replay_control_version AS replayControlVersion,discovery_control_version AS discoveryControlVersion,(SELECT COUNT(*) FROM jobs WHERE executor_id=executors.id AND user_id=? AND status='running' AND lease_until>?) AS activeJobs FROM executors WHERE id=?",executor.user_id,t,executor.id).first();
     return json({...status,minimumProtocol:executor.minimum_protocol});
   }
   if (path === "/api/executor/claim") {
@@ -723,7 +724,7 @@ async function executorApi(request, env, url) {
       return json({job:null,retryAfter:300,upgradeRequired:true});
     // Reclaim only the current owner's expired leases; UPDATE RETURNING arbitrates concurrent machines.
     await env.DB.batch([
-      stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0, executor.id),
+      stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=?,discovery_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0,request.headers.get('x-executor-discovery-control')==='1'?1:0, executor.id),
       stmt(
         env,
         "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,lease_token=NULL,executor_id=NULL,reserved_bytes=0,error='执行器租约过期',available_at=?,updated_at=? WHERE user_id=? AND status='running' AND lease_until<?",
@@ -771,6 +772,7 @@ async function executorApi(request, env, url) {
         WHERE candidate.user_id=? AND candidate.status='queued' AND candidate.available_at<=?
         AND ((policy.latest_limit=0 AND policy.scan_limit IN(10,30,50,100)) OR ?=1)
         AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources replay WHERE replay.id=candidate.source_id AND (replay.waiting_replay=1 OR replay.url LIKE '%/streams')))
+        AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources discovery WHERE discovery.id=candidate.source_id AND discovery.kind='playlist'))
         AND (candidate.kind='scan' OR target.object_key IS NOT NULL OR policy.audio_mode='mp3' OR ?=1)
         AND (candidate.kind='scan' OR EXISTS(SELECT 1 FROM active_episode_window w WHERE w.id=candidate.episode_id))
         AND (candidate.kind='scan' OR policy.latest_limit=0 OR NOT EXISTS(SELECT 1 FROM jobs scan WHERE scan.channel_id=candidate.channel_id AND scan.kind='scan' AND scan.status IN('queued','running')))
@@ -789,6 +791,7 @@ async function executorApi(request, env, url) {
       t,
       request.headers.get('x-executor-content-control')==='1'?1:0,
       request.headers.get('x-executor-replay-control')==='1'?1:0,
+      request.headers.get('x-executor-discovery-control')==='1'?1:0,
       request.headers.get('x-executor-audio-control')==='1'?1:0,
       request.headers.get("x-executor-protocol") === "2" ? 1 : 0,
       t,
@@ -821,7 +824,7 @@ async function executorApi(request, env, url) {
     });
   }
   const m = path.match(
-    /^\/api\/executor\/jobs\/([\w-]+)\/(heartbeat|scan|audio|fail|metadata)$/,
+    /^\/api\/executor\/jobs\/([\w-]+)\/(heartbeat|inventory|scan|audio|fail|metadata)$/,
   );
   requireValue(m, 404, "接口不存在");
   const lease = request.headers.get("x-lease-token") || "";
@@ -886,6 +889,14 @@ async function executorApi(request, env, url) {
     ).run();
     return json({ ok: true });
   }
+  if(m[2]==='inventory'){
+    requireValue(job.kind==='scan'&&request.headers.get('x-executor-discovery-control')==='1',409,'需要支持完整列表发现的扫描执行器');
+    const source=await stmt(env,'SELECT kind FROM sources WHERE id=?',job.source_id).first();
+    requireValue(source?.kind==='playlist',409,'仅播放列表使用完整清单比对');
+    const b=await body(request,768000);validateInventory(b.items);
+    const preferences=await stmt(env,'SELECT MAX(scan_limit,latest_limit) scan_limit FROM channel_preferences WHERE id=?',job.channel_id).first();
+    return json(await inventoryBatch(env,job,lease,b.items,preferences.scan_limit,t));
+  }
   if (m[2] === "scan") {
     requireValue(job.kind === "scan", 409, "任务类型不匹配");
     const b = await body(request,262144);
@@ -914,7 +925,11 @@ async function executorApi(request, env, url) {
     const seen = new Set();
     const entries = b.entries.map((e, index) => ({ ...e, position: e.position ?? index + 1 }))
       .filter(e => { if (seen.has(e.video_id)) return false; seen.add(e.video_id); return true; });
+    const source=await stmt(env,'SELECT kind FROM sources WHERE id=?',job.source_id).first();
+    const inventory=source?.kind==='playlist';
+    if(inventory)requireValue(request.headers.get('x-executor-discovery-control')==='1',409,'播放列表需要升级执行器后完整比对');
     const statements = [scanRecords(env,job,lease,entries,t)];
+    if(inventory)statements.push(acknowledgeInventory(env,job,lease,entries,t));
     if(request.headers.get('x-executor-protocol')==='2') statements.push(stmt(env, `UPDATE jobs SET status='queued',reused=1,attempts=0,error=NULL,available_at=?,updated_at=?
       WHERE channel_id=? AND kind='transcode' AND status='done' AND EXISTS(SELECT 1 FROM episodes e
       WHERE e.id=jobs.episode_id AND e.object_key IS NOT NULL AND json_extract(e.metadata,'$.complete')=0) AND ${live}`,t,t,job.channel_id,job.id,lease,t));
@@ -939,7 +954,7 @@ async function executorApi(request, env, url) {
         entries.length===0?1:0,
         entries.length===0?1:0,
         t + 315360000,
-        t + 3600 * (await stmt(env,"SELECT sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first()).sync_hours,
+        t + (inventory&&job.discovery_more?900:3600 * (await stmt(env,"SELECT sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first()).sync_hours),
         job.source_id,
         job.id,
         lease,

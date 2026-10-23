@@ -7,7 +7,7 @@
 | Git commit | 精确源码与文档状态；可复现和评审的基本单位 |
 | `package.json` / `package-lock.json` 版本 | 应用源码版本，目前 `0.1.0` |
 | 执行器 ZIP 文件名 | 分发版本；目前在打包脚本和链接中写有 `0.1.0` |
-| 执行器协议及 rate/window/audio/replay 能力 | 任务兼容门禁；不会因 npm 版本自动更新 |
+| 执行器协议及 rate/window/audio/replay/discovery 能力 | 任务兼容门禁；不会因 npm 版本自动更新 |
 | Cloudflare Version ID | 某次实际 Worker 发布，由平台返回，与 Git 标签不同 |
 | `vX.Y.Z` 标签 / GitHub Release | 经核验的正式源码发布，只有实际创建后才算存在 |
 
@@ -24,7 +24,7 @@ git grep -n '0.1.0'
 
 1. 确认目标账号、Worker、D1、R2，检查工作区与拟发布提交。使用 `npm ci` 恢复锁定的 npm 依赖。
 2. 运行 `npm run check`、`npm test` 和适用专项；执行器变化运行 Python 离线及媒体检查。已知限制和未覆盖项写入发布记录。
-3. 完成版本引用与 CHANGELOG 更新，并提交。新迁移追加编号；不修改已应用迁移。数据库结构变化先评估旧 Worker/执行器兼容、备份和恢复路径。备份与恢复演练目前尚未形成已验证的完整流程。
+3. 完成版本引用与 CHANGELOG 更新，并提交。新迁移追加编号；不修改已应用迁移。数据库结构变化先评估旧 Worker/执行器兼容、备份和恢复路径。已有本地恢复演练，生产完整备份/恢复仍需维护条件，见运维说明。
 4. 有新迁移时，在确认的生产配置下运行 `npm run db:remote`。发布应用运行 `npm run deploy`，会构建二维码、允许列表执行器 ZIP，然后发布 Worker 和静态资源。不要重新创建已有 D1/R2。
 5. 记录实际 Cloudflare Version ID、Git commit、迁移最高编号、ZIP SHA-256，核验关键 API、静态资源、私人 RSS/HEAD/Range。检查和记录真实媒体/实体播放器覆盖范围，避免公开私人链接。
 6. 需要更新执行器时先等待空闲并保存暂停状态，再更新进程并恢复策略，使用 status 核对能力；不要用历史 PID 强杀任务。

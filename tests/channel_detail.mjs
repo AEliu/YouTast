@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local-only detail pagination/privacy fixture. No YouTube or production writes.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';

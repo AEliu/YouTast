@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Isolated local-only collection/physical-quota regression. No YouTube requests.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';

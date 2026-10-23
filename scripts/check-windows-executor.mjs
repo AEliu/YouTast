@@ -145,7 +145,7 @@ try {
     `Last cloud check-in (Asia/Shanghai): ${new Date(lastSeen * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`,
   );
   result.active_jobs = machine.activeJobs;
-  result.capabilities = { rate_control: machine.rateControlVersion, content_window: machine.windowControlVersion, audio_control:machine.audioControlVersion, replay_control:machine.replayControlVersion };
+  result.capabilities = { rate_control: machine.rateControlVersion, content_window: machine.windowControlVersion, audio_control:machine.audioControlVersion, replay_control:machine.replayControlVersion, discovery_control:machine.discoveryControlVersion };
   if (testVideo) {
     const owner = parse(await readFile(resolve(root, ".secrets/windows-owner.env"), "utf8"));
     if (owner.YOUTAST_URL !== origin || (executor.YOUTAST_USERNAME && owner.YOUTAST_USERNAME !== executor.YOUTAST_USERNAME))

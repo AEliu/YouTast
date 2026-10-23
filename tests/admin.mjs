@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local-only isolated admin database. Retains one fixture admin for browser verification.
 import assert from 'node:assert/strict';
 import {fastExecution} from './execution-fixture.mjs';

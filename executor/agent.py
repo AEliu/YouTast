@@ -145,7 +145,7 @@ class API:
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def post(self, path, data=None, lease=None, audio=None, duration=0, published_at=None):
-        headers = {"Authorization": "Bearer " + self.token, "User-Agent": "YouTast-Executor/0.1", "Accept": "application/json", "X-Executor-Protocol": "2", "X-Executor-Rate-Control":"1", "X-Executor-Content-Control":"1", "X-Executor-Audio-Control":"1", "X-Executor-Replay-Control":"1"}
+        headers = {"Authorization": "Bearer " + self.token, "User-Agent": "YouTast-Executor/0.1", "Accept": "application/json", "X-Executor-Protocol": "2", "X-Executor-Rate-Control":"1", "X-Executor-Content-Control":"1", "X-Executor-Audio-Control":"1", "X-Executor-Replay-Control":"1", "X-Executor-Discovery-Control":"1"}
         if lease:
             headers["X-Lease-Token"] = lease
         if audio:
@@ -291,6 +291,37 @@ def run_audio_download(args,cwd,lost):
     if pending():raise ReplayPending('Live replay is not ready')
 
 
+def playlist_batch(api, path, lease, metadata, entries):
+    """Compare a complete accessible ID inventory, then collect one durable batch."""
+    if not isinstance(metadata.get('entries'), list) or not isinstance(entries, list):
+        raise ValueError('Playlist inventory is not complete')
+    count = metadata.get('playlist_count')
+    if len(entries) > 10000 or (type(count) is int and count > 10000):
+        raise ValueError('Playlist exceeds the 10000-item discovery limit; split this playlist')
+    if type(count) is int and count > len(entries):
+        raise ValueError('Playlist inventory is incomplete; retry without advancing its baseline')
+    items, available = [], {}
+    for position, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            continue
+        video_id = entry.get('id', '')
+        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id) or video_id in available or entry.get('is_live') or entry.get('live_status') in ('is_live', 'is_upcoming', 'post_live') or entry.get('availability') == 'private':
+            continue
+        items.append({'id': video_id, 'position': position})
+        available[video_id] = (position, entry)
+    reply = api.post(path + '/inventory', {'items': items}, lease=lease)
+    selected = reply.get('selected')
+    if not isinstance(selected, list) or len(selected) > 100:
+        raise ValueError('Invalid playlist discovery response')
+    result, seen = [], set()
+    for item in selected:
+        if not isinstance(item, dict) or item.get('id') not in available or item['id'] in seen or item.get('position') != available[item['id']][0]:
+            raise ValueError('Invalid playlist discovery selection')
+        seen.add(item['id'])
+        result.append(available[item['id']])
+    return result
+
+
 def process_job(api, job):
     finished, lost = threading.Event(), threading.Event()
     thread = threading.Thread(target=heartbeat, args=(api, job, finished, lost), daemon=True)
@@ -332,7 +363,7 @@ def process_job(api, job):
                 parsed = urllib.parse.urlsplit(source["url"])
                 if parsed.scheme != "https" or parsed.hostname != "www.youtube.com" or parsed.username or parsed.password or parsed.port:
                     raise ValueError("Invalid YouTube source")
-                args = common + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-end", str(scan_limit), "--", source["url"]]
+                args = common + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-end", str(10001 if source["kind"] == "playlist" else scan_limit), "--", source["url"]]
                 if source['kind']=='video':
                     args.insert(args.index('--'),'--ignore-no-formats-error')
                 try:
@@ -340,12 +371,16 @@ def process_job(api, job):
                 except NoReplayTab:
                     (cwd/'metadata.json').write_text('{"entries":[]}',encoding='utf-8')
                 metadata_file = cwd / "metadata.json"
-                if metadata_file.stat().st_size > 8_000_000:
+                if metadata_file.stat().st_size > (32_000_000 if source["kind"] == "playlist" else 8_000_000):
                     raise RuntimeError("Metadata exceeds size limit")
                 metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                 entries = metadata.get("entries", [metadata])
+                if source['kind']=='playlist':
+                    entries=playlist_batch(api,path,job['leaseToken'],metadata,entries)
+                else:
+                    entries=[(position,entry) for position,entry in enumerate(entries[:scan_limit],1)]
                 results = []
-                for position, entry in enumerate(entries[:scan_limit], 1):
+                for position, entry in entries:
                     if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live"):
                         continue
                     # Flat stream lists may omit status. A finite duration is

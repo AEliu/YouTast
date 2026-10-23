@@ -53,7 +53,7 @@ def check(config_path, max_age=400, allow_local=False):
     if last_seen is not None and (type(last_seen) is not int or last_seen < 0):
         return {**result, "issue": "invalid_response"}
     age = None if not last_seen else int(time.time()) - last_seen
-    capabilities = {name: type(raw.get(field)) is int and raw[field] == 1 for name, field in (("rate", "rateControlVersion"), ("window", "windowControlVersion"), ("audio", "audioControlVersion"), ("replay", "replayControlVersion"))}
+    capabilities = {name: type(raw.get(field)) is int and raw[field] == 1 for name, field in (("rate", "rateControlVersion"), ("window", "windowControlVersion"), ("audio", "audioControlVersion"), ("replay", "replayControlVersion"), ("discovery", "discoveryControlVersion"))}
     issues = []
     if age is None:
         issues.append("executor_not_seen")

@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local-only source lifecycle: empty live scans must reappear via cron, not fail.
 import assert from 'node:assert/strict';

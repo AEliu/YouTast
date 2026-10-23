@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local-only API/R2 regression: cancellation, owner-scoped reuse and physical cleanup.
 import assert from "node:assert/strict";
 import {fastExecution} from './execution-fixture.mjs';

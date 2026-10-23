@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local-only regression. Real API/SQLite/R2; deliberately complete audio out of order.
 import assert from 'node:assert/strict';

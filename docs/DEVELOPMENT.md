@@ -115,3 +115,5 @@ passwords专项按本轮身份清理普通账号，保留一个按状态目录�
 admin、invitations、latest_cleanup、job_recovery、sources_reuse、storage_recovery、quota现在支持配对 `TEST_ORIGIN` / `TEST_PERSIST_TO`，只允许127.0.0.1。前三者还支持 `TEST_ADMIN_FIXTURE` 指定同一个私密fixture文件；admin先运行，保留一个管理员供后续脚本使用。使用新状态时，服务应配置本地专用REGISTRATION_INVITE；job_recovery另用TEST_INVITE指定相同口令。quota必须使用全站/用户上限均为50字节的独立状态，不能混用admin环境。
 
 2026-10-23复验：独立8796服务/ops-test-state运行admin、invitations、latest_cleanup、job_recovery、sources_reuse、storage_recovery，独立8797/50字节状态运行quota均通过；账号按精确身份清理，admin还原原始配置。首次admin配置还原因数字布尔值返回400已修复为规范布尔值，首次遗留的两名普通测试账号也已按ID+用户名清理确认。管理员fixture有意保留，测试服务结束后停止。未迁移Python真实上游/多进程脚本的账号清理，不应把这些结果扩写成整个测试目录均无残留。
+
+来源自动发现新增 `npm run test:discovery`：完整清单、首次范围、增量批次、租约、能力与万条边界的真实本地D1验证。专用环境与回归边界见[来源发现说明](SOURCE-DISCOVERY.md)。不要让不同API脚本并发写同一Miniflare状态目录。

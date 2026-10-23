@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local security contract. A reusable fixture admin is retained intentionally.
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';

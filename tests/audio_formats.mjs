@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local API/SQLite/R2 contract for mixed feeds and format-aware reuse; no YouTube.
 import assert from 'node:assert/strict';

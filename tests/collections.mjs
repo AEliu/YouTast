@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local-only collections/search/privacy contract; all accounts are exact-ID fixtures.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';

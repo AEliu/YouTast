@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Isolated local DB only; never run against production.
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';

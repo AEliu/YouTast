@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Local D1/R2 integration: orphan quota, scheduled cleanup and active lease fencing.
 // Every Wrangler storage command explicitly uses --local.
 import assert from "node:assert/strict";

@@ -23,7 +23,7 @@ async function run(args, env = process.env) {
 }
 let check;
 try {
-  check=await run(["--test",resolve(root,"tests/integration.mjs")],{...process.env,TEST_ORIGIN:origin.origin,TEST_INVITE:secret,TEST_RUN_SUFFIX:suffix});
+  check=await run(["--test",resolve(root,"tests/integration.mjs")],{...process.env,TEST_ORIGIN:origin.origin,TEST_INVITE:secret,TEST_RUN_SUFFIX:suffix,TEST_ALLOW_REMOTE:'1'});
   process.stdout.write(check.output);
   await mkdir(resolve(root,"test-results"),{recursive:true});
   await writeFile(resolve(root,"test-results/production-verification.txt"),check.output);

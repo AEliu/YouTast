@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 import test from "node:test";
 import {fastExecution} from './execution-fixture.mjs';
 import assert from "node:assert/strict";

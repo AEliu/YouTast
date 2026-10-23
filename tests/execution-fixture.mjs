@@ -1,3 +1,4 @@
+import {fetchWithDiscovery as fetch} from './discovery-fixture.mjs';
 // Offline fixtures explicitly opt out of pacing. Never use for real downloads.
 export async function fastExecution(origin,cookie) {
  if(!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin))throw new Error('Offline execution fixture requires localhost');
