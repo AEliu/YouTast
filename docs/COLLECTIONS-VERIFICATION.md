@@ -43,4 +43,14 @@ node tests/channel_detail.mjs
 
 上述六项专项均支持这对环境变量。测试有数据写入，不能连接生产。`collections.mjs --keep` 成功后可在本机保留浏览器fixture和私密测试凭据；正常运行和失败时按精确账号清理。旧admin/invitation等跨脚本fixture尚有保留用途，不宣称所有旧测试残留已统一处理。
 
-生产发布版本及复验结果在实际发布通过后追加。当前本地结果不替代生产验收、真实YouTube或实体播放器验证。
+## 生产发布与复验
+
+源码 `d9c8077` 已合并推送到 main，发布版本 `a62b2e26-1079-48e1-a471-5e3bb661a9af`；发布前版本 `781c0c3f-8b37-49da-89f6-c604e43857ae`。无新增迁移、无执行器重启。执行器包内容未变，SHA-256仍为 `f81552e558d2793395fef5f3959297318f2d12da89a1330d2f589b442d01e44b`。
+
+- 线上 app.js、list-ui.js、channel-detail.js、style.css 与发布源码逐字节一致。
+- 仅在临时管理员频道插入152条元数据节目和82项已完成任务，验证完整无重复遍历、越界归末页、总数增加与原有数据一致；未上传R2音频、未请求YouTube。
+- 频道作者搜索35条，越界后返回末页5条；匿名401，非法 offset 和超长搜索返回400。
+- 临时频道删除后详情404，两个列表按唯一测试关键词过滤均为零条，确认本次fixture已清理。
+- 独立读取既有私有RSS，1条152,492字节音频的HEAD、206 Range与FFmpeg完整解码通过。
+
+原始结果：被忽略的 `test-results/collections-production.json`、`test-results/collections-deploy.txt` 和 `.wrangler/windows-executor/rss-result.json`。生产契约复验不替代真实YouTube或实体播放器验收。
