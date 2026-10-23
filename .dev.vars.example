@@ -1,0 +1,2 @@
+# Copy to .dev.vars for local development. Set a random, long value.
+REGISTRATION_INVITE=replace-with-a-random-invitation-secret

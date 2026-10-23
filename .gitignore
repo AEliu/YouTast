@@ -1,0 +1,31 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.secrets/
+dist/
+__pycache__/
+*.pyc
+.venv/
+test-results/
+executor/data/
+
+# Local deployment settings and operator-only records
+wrangler.jsonc
+DEPLOYMENT.md
+VERIFICATION.md
+# Secrets, sessions, databases, logs and generated artifacts
+.env.*
+!.env.example
+.dev.vars.*
+!.dev.vars.example
+*.pem
+*.key
+*.p12
+*.pfx
+*cookies*.txt
+*.log
+*.sqlite*
+*.db
+public/downloads/*.zip
+public/downloads/*.sha256

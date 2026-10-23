@@ -1,0 +1,15 @@
+services:
+  executor:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      YOUTAST_URL: ${YOUTAST_URL:?Set YOUTAST_URL}
+      YOUTAST_TOKEN: ${YOUTAST_TOKEN:?Set YOUTAST_TOKEN}
+    read_only: true
+    tmpfs:
+      - /tmp:size=768m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

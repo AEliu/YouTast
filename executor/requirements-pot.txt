@@ -1,0 +1,3 @@
+# Optional local PO Token provider integration; the Node provider must also be installed.
+-r requirements.txt
+bgutil-ytdlp-pot-provider==2.0.2

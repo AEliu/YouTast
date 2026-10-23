@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>连接执行器 · YouTast</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="install-page">
+      <a class="brand" href="/">youtast<span>●</span></a>
+      <section class="page-heading">
+        <div>
+          <span class="eyebrow">BRING YOUR OWN MACHINE</span>
+          <h1>让你的机器，<br />成为声音的起点<span>.</span></h1>
+          <p>
+            在电脑或服务器上运行执行器。机器主动连接你的频道，无需开放公网入站端口。
+          </p>
+        </div>
+      </section>
+      <section class="install-step">
+        <span class="step-number">01</span>
+        <div>
+          <h2>下载执行器</h2>
+          <p>
+            同一个安装包可以分发给多台机器。包含 Python 执行器、Docker
+            配置和完整使用说明，不包含真实密钥。
+          </p>
+          <p class="section-actions">
+            <a
+              class="primary"
+              href="/downloads/youtast-executor-0.1.0.zip"
+              download
+              >下载执行器 ZIP ↓</a
+            ><a
+              class="small-button"
+              href="/downloads/youtast-executor-0.1.0.zip.sha256"
+              download
+              >SHA-256 校验值</a
+            >
+          </p>
+        </div>
+      </section>
+      <section class="install-step">
+        <span class="step-number">02</span>
+        <div>
+          <h2>为每台机器创建密钥</h2>
+          <p>
+            回到应用的「执行器」页面，点击「连接执行器」。为机器命名，并保存仅显示一次的密钥。每个密钥只处理所属用户的任务；不同机器使用不同密钥。
+          </p>
+          <a class="small-button" href="/">返回应用 →</a>
+        </div>
+      </section>
+      <section class="install-step">
+        <span class="step-number">03</span>
+        <div>
+          <h2>使用 Docker 启动</h2>
+          <p>
+            在目标机器解压 ZIP，将 <code>.env.example</code> 复制为
+            <code>.env</code>。把
+            <code>YOUTAST_TOKEN</code>
+            的占位值替换成该机器的密钥，再在解压目录运行：
+          </p>
+          <pre><code>docker compose up -d --build
+docker compose logs -f</code></pre>
+          <p>
+            需要机器已安装并启动
+            Docker。环境文件包含私密凭据，请保存在可信机器上。
+          </p>
+          <p>
+            不使用 Docker 时，安装 Python 3.11+、FFmpeg，以及 Node.js 22+ 或
+            Deno 2.3+，再按包内 README 的 PowerShell / Linux 命令启动。
+          </p>
+        </div>
+      </section>
+      <section class="install-step">
+        <span class="step-number">04</span>
+        <div>
+          <h2>等待机器连接，开始转换</h2>
+          <p>
+            机器空闲时会逐步降低轮询频率，最多约 5
+            分钟发现新任务。机器必须能正常访问
+            YouTube；若站点要求人机验证，任务会显示失败原因，恢复网络后可在队列中重试。
+          </p>
+          <p>
+            机器连接后，为频道添加视频、playlist
+            或作者来源。音频生成后，在频道中复制私人 RSS 链接订阅。
+          </p>
+          <pre><code># 停止 Docker 执行器
+docker compose down</code></pre>
+          <p>停用某台机器时，也可以在应用中撤销它的密钥。</p>
+        </div>
+      </section>
+      <footer>
+        <span>让好内容离开屏幕，陪你走得更远。</span
+        ><a href="/">返回声音空间</a>
+      </footer>
+    </div>
+  </body>
+</html>

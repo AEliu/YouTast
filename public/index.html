@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>YouTast · 把观看变成聆听</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div id="auth" class="auth-shell" hidden>
+      <section class="auth-story">
+        <a class="brand" href="/">youtast<span>●</span></a>
+        <div>
+          <span class="eyebrow">YOUR VIDEOS. YOUR AIRWAVES.</span>
+          <h1>好内容，<br />换一种陪伴。</h1>
+          <p>将 YouTube 收藏变成属于你的 Podcast。<br />离开屏幕，带上声音。</p>
+          <div class="wave" aria-hidden="true">▂ ▄ ▆ ▃ █ ▅ ▂ ▇ ▄ ▆ ▃ ▅ ▂</div>
+        </div>
+        <small>私人频道 · 自托管执行器 · 自由聆听</small>
+      </section>
+      <section class="auth-form">
+        <form id="login-form">
+          <span class="eyebrow">WELCOME TO YOUR SOUND SPACE</span>
+          <h2 id="auth-title">欢迎回来</h2>
+          <p class="muted" id="auth-subtitle">登录，继续你的收听旅程。</p>
+          <label
+            >用户名<input
+              name="username"
+              required
+              minlength="3"
+              maxlength="40"
+              autocomplete="username"
+              placeholder="你的用户名" /></label
+          ><label
+            >密码<input
+              name="password"
+              required
+              minlength="12"
+              maxlength="128"
+              type="password"
+              autocomplete="current-password"
+              placeholder="至少 12 个字符" /></label
+          ><label id="invite-label" hidden
+            >邀请码<input
+              name="invite"
+              type="password"
+              autocomplete="off"
+              placeholder="向管理员获取邀请码"
+          /></label>
+          <p id="auth-error" role="alert" class="error"></p>
+          <button class="primary wide" id="auth-submit">登录 →</button
+          ><button type="button" class="text-button wide" id="auth-toggle">
+            有邀请码？创建账号</button
+          ><small>密码经过加盐散列存储，频道默认私有。</small>
+        </form>
+      </section>
+    </div>
+    <div id="app" class="app-shell" hidden>
+      <aside>
+        <a class="brand" href="/">youtast<span>●</span></a>
+        <div class="workspace-label">个人声音工作室</div>
+        <nav aria-label="主导航">
+          <button data-view="channels" class="nav-button active">
+            <span>◫</span> 我的频道 <b id="nav-count">0</b></button
+          ><button data-view="episodes" class="nav-button">
+            <span>♫</span> 声音资料库</button
+          ><button data-view="jobs" class="nav-button">
+            <span>≋</span> 任务队列</button
+          ><button data-view="executors" class="nav-button">
+            <span>⌘</span> 执行器
+          </button>
+          <button data-view="settings" class="nav-button"><span>⚙</span> 用户设置</button>
+          <button data-view="admin" id="admin-nav" class="nav-button" hidden><span>▣</span> 管理后台</button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="status-dot"></span> 为你的隐私而设计
+          <p>音频保存在私人存储中。<br />只有持有订阅链接的人可收听。</p>
+        </div>
+        <div class="user-row">
+          <div class="avatar" id="avatar">U</div>
+          <div><strong id="username"></strong><small>私人工作空间</small></div>
+          <button
+            id="logout"
+            class="icon-button"
+            title="退出登录"
+            aria-label="退出登录"
+          >
+            ↗
+          </button>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <span id="breadcrumb">工作空间 / 我的频道</span>
+          <div>
+            <span class="private-badge">◉ 私人空间</span
+            ><button
+              id="refresh"
+              class="icon-button"
+              title="刷新数据"
+              aria-label="刷新数据"
+            >
+              ↻
+            </button>
+          </div>
+        </header>
+        <div class="main-body">
+          <section class="page-heading">
+            <div>
+              <span class="eyebrow">LESS SCREEN. MORE LISTENING.</span>
+              <h1 id="page-title">我的频道<span>.</span></h1>
+              <p id="page-description">
+                把值得一听的内容，放进自己的声音世界。
+              </p>
+            </div>
+            <button id="new-channel" class="primary">＋ 新建频道</button>
+          </section>
+          <section id="stats" class="stats">
+            <div>
+              <span>私人频道</span
+              ><strong id="stat-channels">0<small>个</small></strong>
+            </div>
+            <div>
+              <span>可收听单集</span
+              ><strong id="stat-episodes">0<small>集</small></strong>
+            </div>
+            <div>
+              <span>正在排队 / 处理</span
+              ><strong id="stat-jobs">0<small>项</small></strong>
+            </div>
+            <div>
+              <span>音频存储</span
+              ><strong id="stat-storage">0<small>MB</small></strong>
+            </div>
+          </section>
+          <section id="content" aria-live="polite"></section>
+          <footer>
+            <span>你收藏的灵感，现在可以随身听。</span
+            ><span>YOUTAST / PRIVATE AUDIO SPACE</span>
+          </footer>
+        </div>
+      </main>
+    </div>
+    <div id="initial" class="initial">
+      youtast<span> · 正在打开声音空间…</span>
+    </div>
+    <dialog id="dialog">
+      <form id="dialog-form">
+        <button
+          type="button"
+          class="dialog-close icon-button"
+          aria-label="关闭"
+        >
+          ×</button
+        ><span class="eyebrow" id="dialog-eyebrow">MAKE IT YOURS</span>
+        <h2 id="dialog-title"></h2>
+        <div id="dialog-fields"></div>
+        <p id="dialog-error" class="error" role="alert"></p>
+        <button id="dialog-submit" class="primary wide">创建</button>
+      </form>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>
