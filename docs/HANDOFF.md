@@ -9,7 +9,7 @@
 - **已实现**：当前源码中有对应实现，不等同于所有环境均验证通过。
 - **已验证**：列明验证环境、范围和证据；模拟上游、真实 FFmpeg、真实 YouTube、实体播放器分别说明。
 - **仅计划 / 待实现**：没有可交付实现，不应向用户宣称已经完成。
-- 运行状态是查询时点的快照。2026-10-23 23:17 的只读健康检查返回 healthy、activeJobs=0，rate/window/audio/replay 均为1，最近一次轮询距查询157秒（阈值400秒）。这仅证明该凭证、API/数据库通路及最近轮询，不代表YouTube、R2播放或主机全部进程正常，不保存历史PID作为未来健康证明。
+- 运行状态是查询时点的快照。2026-10-24发布后只读健康检查返回healthy、activeJobs=0，rate/window/audio/replay/discovery均具备，最近一次轮询距查询35秒（阈值400秒），原未暂停状态已恢复。这仅证明该凭证、API/数据库通路及最近轮询；YouTube大型列表与主机长期运行仍需相应验收，不保存历史PID作为未来健康证明。
 
 线上实例：<https://youtast.yi-yi.workers.dev/>；本地常用地址：<http://127.0.0.1:8787/>。
 
@@ -19,13 +19,13 @@
 | --- | --- | --- |
 | 账号改密与恢复 | 已实现、已部署；本地API/UI、确定性登录竞态及生产临时普通账号验证通过；操作员CLI远程恢复及精确清理通过 | `b91c8543-65cc-4bb6-b440-469707f2c5ea` |
 | 运维工具与旧专项清理 | 只读健康6项测试、本地D1/R2备份恢复演练与7项旧API专项通过；生产全量备份/恢复及告警未执行 | 本机工具，无Worker变更 |
-| 按来源自动发现 | 作者保持最近候选扫描；playlist完整比对及分批新增，本地API/离线回归通过；发布状态见来源发现记录 | 本轮待发布 |
+| 按来源自动发现 | 已部署；本地完整专项与回归、生产临时账号基线/首批验证通过；本机执行器已空闲升级并恢复原运行策略 | `3d9edb48-0c17-4798-bc89-bec41572a9af` |
 | 全局分页、搜索与测试清理 | 已实现、已部署；本地152条节目/82项任务、浏览器及线上临时频道分页/搜索通过；六项专项确认精确清理；详见列表验证记录 | `a62b2e26-1079-48e1-a471-5e3bb661a9af` |
 | 频道详情分页及删除退页修复 | 已实现、已部署；16 项 JS 单元、独立本地 API/浏览器、线上临时频道 32 条分页与缓存 31→30→0 删除验证通过；详见分页验证记录 | `781c0c3f-8b37-49da-89f6-c604e43857ae` |
 | 频道详情页 | 已实现、已部署；本地独立分页/排序/权限测试、浏览器交互、线上四类详情接口与资源检查通过 | `837f86e6-11b7-4a95-b6ff-0152d5e66d99` |
 | 设置入口精简 | 已实现、已部署；移除主导航“用户设置”，底部头像和用户名按钮进入 `#settings`；本地 Enter 键进入及线上 HTML 检查通过 | `380430cc-818e-4805-a65e-a94afb366259` |
 
-版本基线：原未提交功能已保存为 `f347713`，分页修复为 `d73b9ef`，最近一次已核验发布源码为 `d807ba4`（账号安全，包含此前列表与搜索）。包版本与执行器 ZIP 文件名仍为 `0.1.0`，不等同 Cloudflare Version ID；当前未建立新版本标签。
+版本基线：原未提交功能已保存为 `f347713`，分页修复为 `d73b9ef`，最近一次已核验发布源码为 `540036f`（按来源自动发现，包含此前账号安全与列表搜索）。包版本与执行器 ZIP 文件名仍为 `0.1.0`，不等同 Cloudflare Version ID；当前未建立新版本标签。
 
 全局列表与账号安全已合并推送main并部署；随后运维工具与旧专项清理经 `codex/ops-reliability` 整理并合并main，不涉及Worker或执行器变更。交付状态见对应验证记录。接手仍先执行 `git status --short`，不要重置或覆盖未提交内容。
 
@@ -55,7 +55,7 @@ flowchart LR
 | 开发/发布 | Node.js、npm、Wrangler 4（锁文件约束具体安装版本）；esbuild 用于二维码资源打包 |
 | 部署方式 | Cloudflare 网页/API/D1/R2；当前一台 Windows 后台执行器，另有 Docker 配置但未实机验证 |
 
-配置文件实际是被 Git 忽略的 `wrangler.jsonc`，不是 `wrangler.toml`。发布模板是 `wrangler.example.jsonc`。已有生产记录到 `0015`；本轮列表、搜索与测试清理无需新增迁移。
+配置文件实际是被 Git 忽略的 `wrangler.jsonc`，不是 `wrangler.toml`。发布模板是 `wrangler.example.jsonc`。生产已应用至 `0016_source_discovery.sql`；来源发现需配套discovery能力执行器，单视频保持原逻辑。
 
 执行器从外网主动轮询，不需要给 Windows 或其他节点开放入站端口。一个执行器进程一次处理一个任务；用户并发上限约束同一账号的全部执行器，单进程不会因并发值增大而自动启动多个任务。
 
@@ -165,11 +165,11 @@ Cron每15分钟检查到期来源、租约及对象清理；并非直播结束�
 | `scripts/restart-windows-when-idle.py` | 空闲升级；注意保存并恢复原暂停状态 |
 | `scripts/package-executor.py` | 7个文件允许列表打包，不包含密钥/cookies |
 | `scripts/probe-executor-http.py` / `scripts/check-windows-executor.mjs` | 无领取副作用的status诊断 |
-| `migrations/0001_*.sql`–`0015_*.sql` | 全部数据库变更；按顺序应用，勿手工跳过旧迁移 |
+| `migrations/0001_*.sql`–`0016_*.sql` | 全部数据库变更；按顺序应用，勿手工跳过旧迁移 |
 
 关键数据包括 `users`、`sessions`、`channels`、`sources`、`episodes`、`jobs`、`executors`、`object_gc`、`execution_policy`、`storage_cleanup_locks`、`invitations`、`usage_daily`、`app_config`、`admin_audit`。关键视图 `channel_preferences` 合并频道与用户默认，`active_episode_window` 提供最新 N 选择。部分保障由SQL索引/触发器实现，改业务时要一起阅读迁移。
 
-迁移分组：0001–0004基础/对象回收/复用；0005–0006排序及加入位置；0007–0009偏好/元数据/协议/文字语言；0010后台；0011邀请码；0012请求控制；0013最新窗口与空间清理；0014AAC；0015直播回放。新客户端能力通过协议及 rate/window/audio/replay 标志门禁保护。
+迁移分组：0001–0004基础/对象回收/复用；0005–0006排序及加入位置；0007–0009偏好/元数据/协议/文字语言；0010后台；0011邀请码；0012请求控制；0013最新窗口与空间清理；0014AAC；0015直播回放；0016播放列表发现账本与批次。新客户端能力通过协议及 rate/window/audio/replay/discovery 标志门禁保护。
 
 ### 接口索引
 
@@ -288,7 +288,7 @@ powershell -ExecutionPolicy Bypass -File scripts/windows-executor.ps1
 python scripts/probe-executor-http.py
 ```
 
-启动脚本优先注册当前用户登录触发任务；失败则隐藏进程运行。运行状态在 `.wrangler/windows-executor/`，勿用历史PID强杀进程。升级先查看有效租约和暂停状态，等待空闲，再更换进程并恢复原策略。最近直播交付记录中的Windows执行器已回报rate/window/audio/replay能力；当前健康应使用status重新确认。
+启动脚本优先注册当前用户登录触发任务；失败则隐藏进程运行。运行状态在 `.wrangler/windows-executor/`，勿用历史PID强杀进程。升级先查看有效租约和暂停状态，等待空闲，再更换进程并恢复原策略。最近直播交付记录中的Windows执行器已回报rate/window/audio/replay/discovery能力；当前健康应使用status重新确认。
 
 发布流程：
 
@@ -301,7 +301,7 @@ npm run db:remote
 npm run deploy
 ```
 
-`deploy`会构建本地二维码资源、生成执行器允许列表ZIP、发布Worker与静态资源；记录实际Version ID后验证关键API和资源。最近一次已核验部署的执行器ZIP SHA-256为 `f81552e558d2793395fef5f3959297318f2d12da89a1330d2f589b442d01e44b`。打包使用源文件时间戳，重新打包后应记录当次校验值，不能假定静态发布会保留旧ZIP字节。不要盲目运行 bootstrap、重新创建数据库/bucket或轮换已有凭证。
+`deploy`会构建本地二维码资源、生成执行器允许列表ZIP、发布Worker与静态资源；记录实际Version ID后验证关键API和资源。最近一次已核验部署的执行器ZIP SHA-256为 `775aa98b4e518d74fcb00b99950066f5e93ec439541c58ec7bf9476ae2f930c5`。打包使用源文件时间戳，重新打包后应记录当次校验值，不能假定静态发布会保留旧ZIP字节。不要盲目运行 bootstrap、重新创建数据库/bucket或轮换已有凭证。
 
 后续工作按前置条件区分，不把长期建议当作已经完成：
 
@@ -316,3 +316,5 @@ npm run deploy
 | 用户暂缓 | 第二台物理机器部署；等待用户重新提出，不索要SSH信息 |
 
 维护本文时先区分源码实现、已执行的验证与仍需条件的事项。仅文档变化可提交后不部署；业务变化应验证再发布。已经完成的条目移入交付与证据区，保留历史来源而不继续列作当前Bug。
+
+2026-10-24 来源发现交付：21项JS、35项Python离线、健康6项及相关本地API回归通过；feature提交540036f的GitHub Checks通过。生产用临时账号验证150条ID只收录30条和旧执行器门禁，账号精确清理；本机执行器通过令牌/ID及D1归属核验后空闲升级，恢复原未暂停状态，健康快照五项能力齐全、activeJobs=0、心跳35秒。线上JS与ZIP字节核验通过。真实YouTube大型列表性能和长期运行仍待验收。

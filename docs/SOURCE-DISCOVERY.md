@@ -42,4 +42,16 @@ npm run test:discovery
 
 已有API专项通过显式测试fetch封装执行同一inventory握手；清单由其离线fixture提供，不请求真实YouTube。`tests/source_discovery.mjs` 直接使用真实fetch验证门禁和握手。一次共用数据库并发测试的忙锁和资源重载时的503，在停止并发修改后串行重跑通过，不将其算作业务通过结果。
 
-上述测试不等同真实大型YouTube列表的网络性能、隐藏内容可见性或长期负载验收。生产发布与本机执行器升级结果在实际完成后补记。
+上述测试不等同真实大型YouTube列表的网络性能、隐藏内容可见性或长期负载验收。检测范围为视频ID新增与列表位置变化；已有视频的标题/音轨编辑沿用原有元数据与重新生成机制。
+
+## 生产交付
+
+2026-10-24：源码 `540036f`，迁移0016已应用，Worker `3d9edb48-0c17-4798-bc89-bec41572a9af`；[GitHub Checks](https://github.com/AEliu/YouTast/actions/runs/40041068866)通过。发布前私密D1快照已保存，不将其描述为完整R2备份。
+
+生产临时普通账号验证150条ID建立基线但仅收录30条、结果必须匹配批次、旧执行器不领取playlist扫描和新能力回报；临时账号精确删除并独立确认零残留。初版验证脚本误用频道详情路径导致404，修正为/detail后复验通过，各次临时账号均已清理；没有向YouTube请求下载。
+
+已核对本机保存的执行器令牌与ID，再通过D1定位真实归属，保存原暂停标记；仅在activeJobs=0且临时暂停后重启本仓库的Windows runner，并恢复原未暂停状态。已有登录配置与执行器归属不同，未改动该登录配置。新runner已回报discovery=1；其他物理机器仍需自行升级。
+
+线上app.js、channel-detail.js和执行器ZIP均与发布产物字节一致，ZIP SHA-256为 `775aa98b4e518d74fcb00b99950066f5e93ec439541c58ec7bf9476ae2f930c5`。原始脱敏结果在被忽略的test-results/discovery-production-*.json、discovery-health.json、discovery-assets.json。
+
+现有私人RSS独立读取1条节目、152492字节，HEAD、206 Range与FFmpeg完整解码复验通过；该结果不涉及新的YouTube下载。
