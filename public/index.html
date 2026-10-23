@@ -11,7 +11,7 @@
   <body>
     <div id="auth" class="auth-shell" hidden>
       <section class="auth-story">
-        <a class="brand" href="/">youtast<span>●</span></a>
+        <a class="brand" href="/">YouTast<span>●</span></a>
         <div>
           <span class="eyebrow">YOUR VIDEOS. YOUR AIRWAVES.</span>
           <h1>好内容，<br />换一种陪伴。</h1>
@@ -71,7 +71,6 @@
           ><button data-view="executors" class="nav-button">
             <span>⌘</span> 执行器
           </button>
-          <button data-view="settings" class="nav-button"><span>⚙</span> 用户设置</button>
           <button data-view="admin" id="admin-nav" class="nav-button" hidden><span>▣</span> 管理后台</button>
         </nav>
         <div class="sidebar-note">
@@ -79,8 +78,10 @@
           <p>音频保存在私人存储中。<br />只有持有订阅链接的人可收听。</p>
         </div>
         <div class="user-row">
-          <div class="avatar" id="avatar">U</div>
-          <div><strong id="username"></strong><small>私人工作空间</small></div>
+          <button class="user-profile" data-view="settings" aria-label="用户设置" title="用户设置">
+            <span class="avatar" id="avatar">U</span>
+            <span class="user-identity"><strong id="username"></strong><small>私人工作空间</small></span>
+          </button>
           <button
             id="logout"
             class="icon-button"

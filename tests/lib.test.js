@@ -25,6 +25,9 @@ test("YouTube sources canonicalize video, list and author links", () => {
     youtubeSource("https://www.youtube.com/@creator/").url,
     "https://www.youtube.com/@creator/videos",
   );
+  assert.equal(youtubeSource('https://www.youtube.com/@creator/streams/').url,'https://www.youtube.com/@creator/streams');
+  assert.equal(youtubeSource('https://www.youtube.com/channel/UC1234567890123456789012/streams').kind,'author');
+  assert.equal(youtubeSource('https://www.youtube.com/live/dQw4w9WgXcQ').url,'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
   assert.equal(
     youtubeSource("https://www.youtube.com/channel/UC1234567890123456789012")
       .kind,

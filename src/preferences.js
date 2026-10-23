@@ -1,8 +1,8 @@
 import {requireValue} from './lib.js';
 import {SORT_MODES} from './sorting.js';
-export const DEFAULT_SETTINGS = {retention_days:0,text_language:'zh-CN',bitrate:64,scan_limit:30,latest_limit:0,sync_hours:6,feed_limit:500,sort_mode:'source',storage_cleanup:'off'};
+export const DEFAULT_SETTINGS = {retention_days:0,text_language:'zh-CN',bitrate:64,audio_mode:'source',scan_limit:30,latest_limit:0,sync_hours:6,feed_limit:500,sort_mode:'source',storage_cleanup:'off'};
 export const TEXT_LANGUAGES=['original','zh-CN','zh-TW','en','ja','ko','es','fr','de'];
-export const SETTING_OPTIONS = {retention_days:[0,7,30,90,180,365],text_language:TEXT_LANGUAGES,bitrate:[48,64,96,128],scan_limit:[10,30,50,100],latest_limit:[0,10,30,50,100],sync_hours:[6,12,24,48],feed_limit:[50,100,200,500],sort_mode:SORT_MODES,storage_cleanup:['off','oldest']};
+export const SETTING_OPTIONS = {retention_days:[0,7,30,90,180,365],text_language:TEXT_LANGUAGES,bitrate:[48,64,96,128],audio_mode:['source','compact','mp3'],scan_limit:[10,30,50,100],latest_limit:[0,10,30,50,100],sync_hours:[6,12,24,48],feed_limit:[50,100,200,500],sort_mode:SORT_MODES,storage_cleanup:['off','oldest']};
 export const SETTING_RANGES={retention_days:{min:0,max:3650},scan_limit:{min:1,max:100},latest_limit:{min:0,max:100},sync_hours:{min:1,max:168},feed_limit:{min:1,max:1000}};
 export function validateSettings(value, channel=false) {
   requireValue(value && typeof value==='object' && !Array.isArray(value),400,'设置格式无效');
@@ -33,4 +33,4 @@ export function cleanMetadata(value={}) {
     .sort((a,b)=>a.startTime-b.startTime).filter(c=>{if(seen.has(c.startTime))return false;seen.add(c.startTime);return true;}).map(c=>({startTime:c.startTime,title:c.title.slice(0,200)}));
   return {description:text('description',20000),author:text('author',200),thumbnail:imageUrl(value.thumbnail,true),language:text('language',30),chapters,...(TEXT_LANGUAGES.includes(value.text_language)?{text_language:value.text_language}:{}),...(typeof value.complete==='boolean'?{complete:value.complete}:{})};
 }
-export const audioProfile = c => `mp3:${c.bitrate}:original`;
+export const audioProfile = c => c.audio_profile ?? ((c.audio_mode ?? 'source')==='mp3' ? `mp3:${c.bitrate}:original` : `m4a:${c.bitrate}:${c.audio_mode ?? 'source'}`);

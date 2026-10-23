@@ -21,8 +21,17 @@ try {
  cid=(await api('/api/channels',{title:'Execution control fixture'},{status:201})).id;
  await api(`/api/channels/${cid}/sources`,{urls:Array.from({length:8},(_,i)=>`https://www.youtube.com/watch?v=limit${i}abcde`)},{status:201});
  for(let i=0;i<2;i++)machines.push(await api('/api/executors',{name:'throttle machine '+i},{status:201}));
+ const observer=machines[0];
+ const statusFor=e=>api('/api/executor/status',{}, {headers:auth(e)});
+ let status=await statusFor(observer);
+ assert.deepEqual(Object.keys(status).sort(),['id','name','lastSeen','rateControlVersion','windowControlVersion','audioControlVersion','replayControlVersion','activeJobs','minimumProtocol'].sort());
+ assert.equal(status.id,observer.id);assert.equal(status.name,'throttle machine 0');assert.equal(status.activeJobs,0);
+ const beforeStatusSeen=status.lastSeen;
+ assert.deepEqual(await statusFor(observer),status,'Inspection must not claim jobs or update last_seen');
  const first=await Promise.all(Array.from({length:6},(_,i)=>claim(machines[i%2])));assert.equal(first.filter(r=>r.job).length,1,'Shared default gate across machines');
  const accepted=first.findIndex(r=>r.job);let job=first[accepted].job,owner=machines[accepted%2];
+ status=await statusFor(owner);assert.equal(status.activeJobs,1);assert.ok(status.lastSeen>=beforeStatusSeen);assert.equal(status.rateControlVersion,1);
+ assert.equal((await statusFor(machines.find(e=>e.id!==owner.id))).activeJobs,0,'Status is scoped to the authenticated machine');
  assert.equal(job.options.execution.request_interval,2);await finish(owner,job);
  let denied=await claim(machines[1]);assert.equal(denied.job,null);assert.ok(denied.retryAfter>0,'Start interval survives completion');
  await api('/api/execution-policy',{...config,concurrency:2,start_interval:0});

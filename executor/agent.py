@@ -28,7 +28,9 @@ VIDEO_ID = re.compile(r"^[\w-]{11}$", re.ASCII)
 
 def publication_time(metadata):
     """Use original video metadata, never the local download/file time."""
-    value = metadata.get("timestamp")
+    value = metadata.get('release_timestamp') if metadata.get('was_live') or metadata.get('live_status')=='was_live' else None
+    if not isinstance(value,(int,float)) or isinstance(value,bool) or not 0<value<=time.time()+86400:
+        value = metadata.get("timestamp")
     if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= time.time() + 86400:
         return int(value)
     date = metadata.get("upload_date")
@@ -143,13 +145,13 @@ class API:
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def post(self, path, data=None, lease=None, audio=None, duration=0, published_at=None):
-        headers = {"Authorization": "Bearer " + self.token, "User-Agent": "YouTast-Executor/0.1", "Accept": "application/json", "X-Executor-Protocol": "2", "X-Executor-Rate-Control":"1", "X-Executor-Content-Control":"1"}
+        headers = {"Authorization": "Bearer " + self.token, "User-Agent": "YouTast-Executor/0.1", "Accept": "application/json", "X-Executor-Protocol": "2", "X-Executor-Rate-Control":"1", "X-Executor-Content-Control":"1", "X-Executor-Audio-Control":"1", "X-Executor-Replay-Control":"1"}
         if lease:
             headers["X-Lease-Token"] = lease
         if audio:
             if published_at:
                 headers["X-Published-At"] = str(published_at)
-            headers.update({"Content-Type": "audio/mpeg", "Content-Length": str(audio.stat().st_size), "X-Audio-Duration": str(duration)})
+            headers.update({"Content-Type": "audio/mp4" if audio.suffix == '.m4a' else "audio/mpeg", "Content-Length": str(audio.stat().st_size), "X-Audio-Duration": str(duration)})
             with audio.open("rb") as stream:
                 req = urllib.request.Request(self.url + path, data=stream, headers=headers, method="POST")
                 with self.opener.open(req, timeout=300) as response:
@@ -205,6 +207,8 @@ def run_command(arguments, cwd, lost, stdout_name):
             if process.returncode:
                 # Keep raw yt-dlp stderr on the local console, never send cookies or paths to the service.
                 diagnostic = (cwd / "errors.log").read_text(encoding="utf-8", errors="replace")
+                if arguments[-1].endswith('/streams') and re.search(r'does not have a (?:streams|live) tab',diagnostic,re.I):
+                    raise NoReplayTab('No live replay tab yet')
                 if "--cookies" in arguments:
                     LOG.warning("Downloader diagnostic: %s", downloader_failure(diagnostic))
                 else:
@@ -212,6 +216,42 @@ def run_command(arguments, cwd, lost, stdout_name):
                 raise RuntimeError(downloader_failure(diagnostic))
         finally:
             terminate_process(process)
+
+
+def prepare_m4a(source, cwd, lost, bitrate, mode, metadata):
+    """Copy AAC packets when possible; otherwise encode AAC-LC into seekable MP4."""
+    run_command(['ffprobe','-v','error','-select_streams','a:0','-show_entries',
+                 'stream=codec_name,channels:format=duration','-of','json',str(source)],cwd,lost,'probe.json')
+    probe=json.loads((cwd/'probe.json').read_text(encoding='utf-8'))
+    duration=float(probe.get('format',{}).get('duration',0))
+    if not 0<duration<=10801 or not probe.get('streams'):
+        raise RuntimeError('Invalid audio duration or missing audio stream')
+    copy=mode=='source' and probe['streams'][0]['codec_name']=='aac' and source.stat().st_size<=88_000_000
+    def escape(value):
+        return ''.join(('\\'+c if c in '\\=;#\n' else c) for c in str(value))
+    content=';FFMETADATA1\n'+'title='+escape(str(metadata.get('title') or '')[:300])+'\n'
+    chapters=sorted([c for c in (metadata.get('chapters') or [])[:100] if isinstance(c,dict) and isinstance(c.get('start_time'),(int,float)) and 0<=c['start_time']<duration],key=lambda c:c['start_time'])
+    for i,c in enumerate(chapters):
+        start=round(c['start_time']*1000)
+        end=round((chapters[i+1]['start_time'] if i+1<len(chapters) else duration)*1000)
+        if start>=end:continue
+        content+=f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start}\nEND={end}\ntitle={escape(str(c.get('title') or '')[:200])}\n"
+    chapter_file=cwd/'chapters.ffmetadata';chapter_file.write_text(content,encoding='utf-8',newline='\n')
+    audio=cwd/'audio.m4a'
+    args=['ffmpeg','-nostdin','-v','error','-y','-i',str(source),'-i',str(chapter_file),
+          '-map','0:a:0','-map_metadata','1','-map_chapters','1','-vn','-c:a','copy' if copy else 'aac']
+    if not copy:
+        # Apple's RSS guidance pairs 64–96 kbps speech with mono and reserves
+        # 44.1/48 kHz stereo for >=128 kbps. Never alter copied AAC packets.
+        channels=1 if bitrate<128 else min(2,max(1,int(probe['streams'][0].get('channels',2))))
+        sample_rate=24000 if bitrate<64 else 48000
+        args+=['-profile:a','aac_low','-b:a',f'{bitrate}k','-ac',str(channels),'-ar',str(sample_rate)]
+    args+=['-movflags','+faststart',str(audio)]
+    run_command(args,cwd,lost,'package.log')
+    if not audio.is_file() or not 0<audio.stat().st_size<=90_000_000:
+        raise RuntimeError('No audio produced or audio exceeds 90 MB')
+    LOG.info('M4A audio prepared: %s', 'AAC stream copy' if copy else 'AAC encode')
+    return audio,round(duration)
 
 
 def heartbeat(api, job, finished, lost):
@@ -225,6 +265,30 @@ def heartbeat(api, job, finished, lost):
             LOG.warning("Heartbeat HTTP %s", exc.code)
         except Exception as exc:
             LOG.warning("Heartbeat unavailable: %s", type(exc).__name__)
+
+
+class ReplayPending(RuntimeError):
+    pass
+
+
+class NoReplayTab(RuntimeError):
+    pass
+
+
+def run_audio_download(args,cwd,lost):
+    # Observe status before yt-dlp's filters/format selection, using the same
+    # extraction request. No extra per-video preflight request is required.
+    at=args.index('--')
+    args[at:at]=['--ignore-no-formats-error','--no-simulate','--print-to-file','pre_process:%(live_status)s','replay-state.txt']
+    def pending():
+        path=cwd/'replay-state.txt'
+        return path.is_file() and any(s.strip() in ('is_live','is_upcoming','post_live') for s in path.read_text(encoding='utf-8').splitlines())
+    try:
+        run_command(args,cwd,lost,'download.log')
+    except RuntimeError:
+        if pending():raise ReplayPending('Live replay is not ready')
+        raise
+    if pending():raise ReplayPending('Live replay is not ready')
 
 
 def process_job(api, job):
@@ -269,7 +333,12 @@ def process_job(api, job):
                 if parsed.scheme != "https" or parsed.hostname != "www.youtube.com" or parsed.username or parsed.password or parsed.port:
                     raise ValueError("Invalid YouTube source")
                 args = common + ["--flat-playlist", "--dump-single-json", "--skip-download", "--playlist-end", str(scan_limit), "--", source["url"]]
-                run_command(args, cwd, lost, "metadata.json")
+                if source['kind']=='video':
+                    args.insert(args.index('--'),'--ignore-no-formats-error')
+                try:
+                    run_command(args, cwd, lost, "metadata.json")
+                except NoReplayTab:
+                    (cwd/'metadata.json').write_text('{"entries":[]}',encoding='utf-8')
                 metadata_file = cwd / "metadata.json"
                 if metadata_file.stat().st_size > 8_000_000:
                     raise RuntimeError("Metadata exceeds size limit")
@@ -277,15 +346,22 @@ def process_job(api, job):
                 entries = metadata.get("entries", [metadata])
                 results = []
                 for position, entry in enumerate(entries[:scan_limit], 1):
-                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming"):
+                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+                        continue
+                    # Flat stream lists may omit status. A finite duration is
+                    # required before accepting an archive; recheck next sync.
+                    if parsed.path.endswith('/streams') and not (isinstance(entry.get('duration'),(int,float)) and entry['duration']>0):
                         continue
                     results.append({"video_id": entry["id"], "title": str(entry.get("title") or entry["id"])[:300], "duration": max(0, min(86400, int(entry.get("duration") or 0))), "position": position, "published_at": publication_time(entry), 'metadata':{**video_metadata(entry, source['kind']=='video'),'text_language':text_language,'complete':source['kind']=='video'}})
-                api.post(path + "/scan", {"entries": results, "recurring": source["kind"] != "video"}, lease=job["leaseToken"])
+                api.post(path + "/scan", {"entries": results, "recurring": source["kind"] != "video" or not results}, lease=job["leaseToken"])
             else:
                 video_id = job["episode"]["video_id"]
                 if not VIDEO_ID.fullmatch(video_id):
                     raise ValueError("Invalid video ID")
                 selection = 'bestaudio/best'
+                m4a = options.get('encoding_profile','').startswith('m4a:')
+                mode = options.get('audio_mode','source')
+                if mode not in ('source','compact','mp3'):raise ValueError('Unsupported audio mode')
                 if options.get('metadata_only'):
                     run_command(common + ['--no-playlist','--dump-single-json','--skip-download','--',f'https://www.youtube.com/watch?v={video_id}'],cwd,lost,'metadata.json')
                     info = cwd / 'metadata.json'
@@ -297,17 +373,44 @@ def process_job(api, job):
                 max_duration = min(10800, int(89_000_000 * 8 / (bitrate * 1000)))
                 # Embedded ID3 chapters also work for private RSS and older clients
                 # which do not consume the external Podcasting 2.0 chapter file.
-                args = common + ["--no-playlist", "--format", selection, "--extract-audio", "--audio-format", "mp3", "--audio-quality", f"{bitrate}K", "--embed-chapters", "--postprocessor-args", "Metadata+ffmpeg_o:-id3v2_version 3", "--max-filesize", "250M", "--match-filters", f"duration <= {max_duration} & !is_live", "--write-info-json", "--output", "audio.%(ext)s", "--", f"https://www.youtube.com/watch?v={video_id}"]
-                args[args.index('--'):args.index('--')] = ['--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0)]
-                run_command(args, cwd, lost, "download.log")
-                audio = cwd / "audio.mp3"
-                if not audio.exists() or audio.stat().st_size <= 0 or audio.stat().st_size > 90_000_000:
-                    raise RuntimeError("No audio produced or MP3 exceeds 90 MB (videos limited to 3 hours)")
-                meta = json.loads((cwd / "audio.info.json").read_text(encoding="utf-8"))
+                if m4a:
+                    # Language preference precedes codec preference, so requesting
+                    # localized text cannot select a different language audio track.
+                    sorting=['--format-sort','lang,acodec:m4a'] if mode=='source' else []
+                    args=common+['--no-playlist','--format',selection,*sorting,'--max-filesize','250M',
+                        '--match-filters',f'duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming','--write-info-json',
+                        '--print-to-file','after_move:filepath','download-path.txt','--output','source.%(ext)s',
+                        '--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0),
+                        '--',f'https://www.youtube.com/watch?v={video_id}']
+                    run_audio_download(args,cwd,lost)
+                    source=Path((cwd/'download-path.txt').read_text(encoding='utf-8').strip())
+                    if not source.is_absolute():source=cwd/source
+                    if source.resolve().parent!=cwd.resolve() or not source.is_file() or source.stat().st_size>250_000_000:
+                        raise RuntimeError('Unexpected downloaded audio file')
+                    info=cwd/'source.info.json'
+                    if info.stat().st_size>8_000_000:raise RuntimeError('Metadata exceeds size limit')
+                    meta=json.loads(info.read_text(encoding='utf-8'))
+                    audio,actual_duration=prepare_m4a(source,cwd,lost,bitrate,mode,meta)
+                else:
+                    args = common + ["--no-playlist", "--format", selection, "--extract-audio", "--audio-format", "mp3", "--audio-quality", f"{bitrate}K", "--embed-chapters", "--postprocessor-args", "Metadata+ffmpeg_o:-id3v2_version 3", "--max-filesize", "250M", "--match-filters", f"duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming", "--write-info-json", "--output", "audio.%(ext)s", "--", f"https://www.youtube.com/watch?v={video_id}"]
+                    args[args.index('--'):args.index('--')] = ['--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0)]
+                    run_audio_download(args,cwd,lost)
+                    audio = cwd / "audio.mp3"
+                    if not audio.exists() or audio.stat().st_size <= 0 or audio.stat().st_size > 90_000_000:
+                        raise RuntimeError("No audio produced or MP3 exceeds 90 MB (videos limited to 3 hours)")
+                    meta = json.loads((cwd / "audio.info.json").read_text(encoding="utf-8"))
+                    actual_duration=int(meta.get('duration') or 0)
                 if lost.is_set():
                     raise RuntimeError("Lease lost before upload")
                 api.post(path + '/metadata', {'metadata': {**video_metadata(meta),'text_language':text_language,'complete':True},'title':str(meta.get('title') or video_id)[:300]}, lease=job['leaseToken'])
-                api.post(path + "/audio", lease=job["leaseToken"], audio=audio, duration=int(meta.get("duration") or 0), published_at=publication_time(meta))
+                api.post(path + "/audio", lease=job["leaseToken"], audio=audio, duration=actual_duration, published_at=publication_time(meta))
+    except ReplayPending:
+        if not lost.is_set():
+            try:
+                api.post(path+'/fail',{'defer_replay':True},lease=job['leaseToken'])
+                LOG.info('Live replay not ready; deferred until next channel interval')
+            except Exception:
+                LOG.warning('Could not defer replay; lease expiry will recover the job')
     except Exception as exc:
         # Detailed third-party exception strings may include local secrets; send only controlled messages.
         message = str(exc) if type(exc) in (RuntimeError, ValueError) else f"{type(exc).__name__}: processing or upload failed"

@@ -1,3 +1,5 @@
+import {audioMedia} from './audio.js';
+import {channelDetail} from './channel-detail.js';
 import {adminApi} from "./admin.js";
 import {subscriptionPage} from './subscribe.js';
 import {seedLegacyInvite} from './invitations.js';
@@ -16,7 +18,7 @@ import {
   HttpError,
   requireValue,
 } from "./lib.js";
-import { SORT_MODES, sortEpisodes } from "./sorting.js";
+import { SORT_MODES, sortEpisodes, effectiveSortMode } from "./sorting.js";
 import { DEFAULT_SETTINGS, SETTING_OPTIONS, SETTING_RANGES, TEXT_LANGUAGES, validateSettings, imageUrl, cleanMetadata, audioProfile } from "./preferences.js";
 
 const json = (data, status = 200, headers = {}) =>
@@ -337,7 +339,7 @@ async function api(request, env, url) {
       ),
       stmt(
         env,
-        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version FROM executors WHERE user_id=? ORDER BY created_at DESC",
+        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version FROM executors WHERE user_id=? ORDER BY created_at DESC",
         user.id,
       ),
       stmt(
@@ -422,10 +424,11 @@ async function api(request, env, url) {
     return json({ ok: true });
   }
   const channelRoute = path.match(
-    /^\/api\/channels\/([\w-]+)(?:\/(sources|rotate|sync|sort|settings))?$/,
+    /^\/api\/channels\/([\w-]+)(?:\/(sources|rotate|sync|sort|settings|detail))?$/,
   );
   if (channelRoute) {
     const channel = await ownedChannel(env, user, channelRoute[1]);
+    if(channelRoute[2]==='detail'&&method==='GET')return json(await channelDetail(env,channel,url));
     if(channelRoute[2] === "settings" && method === "POST") {
       const b=await body(request), settings=validateSettings(b.settings,true);
       requireValue(typeof b.title==='string'&&b.title.trim().length>0&&b.title.length<=100,400,'频道名称需为 1–100 个字符');
@@ -465,10 +468,12 @@ async function api(request, env, url) {
       );
       let parsed;
       try {
-        parsed = b.urls.map(youtubeSource);
+        requireValue(b.include_replays==null||typeof b.include_replays==='boolean',400,'直播回放选项无效');
+        parsed = b.urls.map(youtubeSource).flatMap(s=>b.include_replays&&s.kind==='author'&&s.url.endsWith('/videos')?[s,{...s,url:s.url.replace(/\/videos$/,'/streams')}]:[s]);
       } catch (e) {
         throw new HttpError(400, e.message);
       }
+      const requestedCount=parsed.length;
       const existing = await stmt(
         env,
         "SELECT url FROM sources WHERE channel_id=?",
@@ -559,7 +564,7 @@ async function api(request, env, url) {
       );
       if (added) await schedule(env, user.id);
       return json(
-        { ok: true, added, duplicates: b.urls.length - added, reused },
+        { ok: true, added, duplicates: requestedCount - added, reused },
         added ? 201 : 200,
       );
     }
@@ -697,15 +702,15 @@ async function executorApi(request, env, url) {
     t = now();
   requireValue(request.method === "POST", 405, "仅支持 POST");
   if(path==='/api/executor/status') {
-    const active=await stmt(env,"SELECT COUNT(*) n FROM jobs WHERE executor_id=? AND user_id=? AND status='running' AND lease_until>?",executor.id,executor.user_id,t).first();
-    return json({activeJobs:active.n,minimumProtocol:executor.minimum_protocol});
+    const status=await stmt(env,"SELECT id,name,last_seen AS lastSeen,rate_control_version AS rateControlVersion,window_control_version AS windowControlVersion,audio_control_version AS audioControlVersion,replay_control_version AS replayControlVersion,(SELECT COUNT(*) FROM jobs WHERE executor_id=executors.id AND user_id=? AND status='running' AND lease_until>?) AS activeJobs FROM executors WHERE id=?",executor.user_id,t,executor.id).first();
+    return json({...status,minimumProtocol:executor.minimum_protocol});
   }
   if (path === "/api/executor/claim") {
     if(Number(request.headers.get('x-executor-protocol')||1)<executor.minimum_protocol)
       return json({job:null,retryAfter:300,upgradeRequired:true});
     // Reclaim only the current owner's expired leases; UPDATE RETURNING arbitrates concurrent machines.
     await env.DB.batch([
-      stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0, executor.id),
+      stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0, executor.id),
       stmt(
         env,
         "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,lease_token=NULL,executor_id=NULL,reserved_bytes=0,error='执行器租约过期',available_at=?,updated_at=? WHERE user_id=? AND status='running' AND lease_until<?",
@@ -721,12 +726,12 @@ async function executorApi(request, env, url) {
         `UPDATE episodes AS pending SET (object_key,size,duration,published_at,metadata,encoding_profile,ready_at,expired_at,title)=(
         SELECT cached.object_key,cached.size,cached.duration,COALESCE(cached.published_at,pending.published_at),CASE WHEN COALESCE(json_extract(cached.metadata,'$.text_language'),'zh-CN')=(SELECT text_language FROM channel_preferences WHERE id=pending.channel_id) THEN cached.metadata ELSE pending.metadata END,cached.encoding_profile,unixepoch(),NULL,CASE WHEN COALESCE(json_extract(cached.metadata,'$.text_language'),'zh-CN')=(SELECT text_language FROM channel_preferences WHERE id=pending.channel_id) THEN cached.title ELSE pending.title END FROM episodes cached
         JOIN channels owner ON owner.id=cached.channel_id WHERE owner.user_id=?
-          AND cached.video_id=pending.video_id AND cached.object_key IS NOT NULL AND cached.encoding_profile=(SELECT 'mp3:'||bitrate||':original' FROM channel_preferences WHERE id=pending.channel_id)
+          AND cached.video_id=pending.video_id AND cached.object_key IS NOT NULL AND cached.encoding_profile=(SELECT audio_profile FROM channel_preferences WHERE id=pending.channel_id)
         ORDER BY (COALESCE(json_extract(cached.metadata,'$.text_language'),'zh-CN')=(SELECT text_language FROM channel_preferences WHERE id=pending.channel_id)) DESC,cached.created_at,cached.id LIMIT 1)
         WHERE pending.object_key IS NULL
         AND EXISTS(SELECT 1 FROM jobs j WHERE j.episode_id=pending.id AND j.user_id=? AND j.kind='transcode' AND j.status='queued')
         AND EXISTS(SELECT 1 FROM episodes cached JOIN channels owner ON owner.id=cached.channel_id
-          WHERE owner.user_id=? AND cached.video_id=pending.video_id AND cached.object_key IS NOT NULL AND cached.encoding_profile=(SELECT 'mp3:'||bitrate||':original' FROM channel_preferences WHERE id=pending.channel_id))`,
+          WHERE owner.user_id=? AND cached.video_id=pending.video_id AND cached.object_key IS NOT NULL AND cached.encoding_profile=(SELECT audio_profile FROM channel_preferences WHERE id=pending.channel_id))`,
         executor.user_id,
         executor.user_id,
         executor.user_id,
@@ -748,10 +753,12 @@ async function executorApi(request, env, url) {
     let job;
     try {job = await stmt(
       env,
-      `UPDATE jobs SET status='running',encoding_profile=COALESCE((SELECT encoding_profile FROM episodes WHERE id=jobs.episode_id AND object_key IS NOT NULL),(SELECT 'mp3:'||bitrate||':original' FROM channel_preferences WHERE id=jobs.channel_id)),attempts=attempts+1,error=NULL,lease_token=?,executor_id=?,lease_until=?,updated_at=? WHERE id=(
+      `UPDATE jobs SET status='running',encoding_profile=COALESCE((SELECT encoding_profile FROM episodes WHERE id=jobs.episode_id AND object_key IS NOT NULL),(SELECT audio_profile FROM channel_preferences WHERE id=jobs.channel_id)),attempts=attempts+1,error=NULL,lease_token=?,executor_id=?,lease_until=?,updated_at=? WHERE id=(
         SELECT candidate.id FROM jobs candidate LEFT JOIN episodes target ON target.id=candidate.episode_id JOIN channel_preferences policy ON policy.id=candidate.channel_id
         WHERE candidate.user_id=? AND candidate.status='queued' AND candidate.available_at<=?
         AND ((policy.latest_limit=0 AND policy.scan_limit IN(10,30,50,100)) OR ?=1)
+        AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources replay WHERE replay.id=candidate.source_id AND (replay.waiting_replay=1 OR replay.url LIKE '%/streams')))
+        AND (candidate.kind='scan' OR target.object_key IS NOT NULL OR policy.audio_mode='mp3' OR ?=1)
         AND (candidate.kind='scan' OR EXISTS(SELECT 1 FROM active_episode_window w WHERE w.id=candidate.episode_id))
         AND (candidate.kind='scan' OR policy.latest_limit=0 OR NOT EXISTS(SELECT 1 FROM jobs scan WHERE scan.channel_id=candidate.channel_id AND scan.kind='scan' AND scan.status IN('queued','running')))
         AND (?=1 OR (policy.bitrate=64 AND policy.text_language IN ('zh-CN','original') AND policy.scan_limit=30 AND (candidate.kind='scan' OR target.object_key IS NULL)))
@@ -759,7 +766,7 @@ async function executorApi(request, env, url) {
           WHERE running.user_id=candidate.user_id AND running.kind='transcode' AND running.status='running'
           AND running.lease_until>? AND active.video_id=target.video_id)
           AND NOT EXISTS(SELECT 1 FROM episodes completed JOIN channels owner ON owner.id=completed.channel_id
-            WHERE owner.user_id=candidate.user_id AND completed.video_id=target.video_id AND completed.object_key IS NOT NULL AND completed.encoding_profile='mp3:'||policy.bitrate||':original'))
+            WHERE owner.user_id=candidate.user_id AND completed.video_id=target.video_id AND completed.object_key IS NOT NULL AND completed.encoding_profile=policy.audio_profile))
         ORDER BY candidate.created_at,candidate.id LIMIT 1) AND status='queued' RETURNING *`,
       token,
       executor.id,
@@ -768,6 +775,8 @@ async function executorApi(request, env, url) {
       executor.user_id,
       t,
       request.headers.get('x-executor-content-control')==='1'?1:0,
+      request.headers.get('x-executor-replay-control')==='1'?1:0,
+      request.headers.get('x-executor-audio-control')==='1'?1:0,
       request.headers.get("x-executor-protocol") === "2" ? 1 : 0,
       t,
     ).first();}catch(error){
@@ -790,7 +799,7 @@ async function executorApi(request, env, url) {
           job.episode_id,
         ).first()
       : null;
-    const preferences = await stmt(env,"SELECT bitrate,text_language,MAX(scan_limit,latest_limit) scan_limit,latest_limit,sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first();
+    const preferences = await stmt(env,"SELECT bitrate,audio_mode,text_language,MAX(scan_limit,latest_limit) scan_limit,latest_limit,sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first();
     const [,bitrate]=job.encoding_profile.split(":");
     return json({
       job: { id: job.id, kind: job.kind, leaseToken: token, source, episode, options:{...preferences,bitrate:Number(bitrate),encoding_profile:job.encoding_profile,metadata_only:Boolean(episode?.metadata_only),execution:policy} },
@@ -842,6 +851,12 @@ async function executorApi(request, env, url) {
   }
   if (m[2] === "fail") {
     const b = await body(request);
+    if(b.defer_replay===true) {
+      requireValue(job.kind==='transcode',409,'仅音频任务可等待回放');
+      const preferences=await stmt(env,'SELECT sync_hours FROM channel_preferences WHERE id=?',job.channel_id).first();
+      await stmt(env,"UPDATE jobs SET status='queued',attempts=MAX(0,attempts-1),error='直播回放尚未就绪，按频道间隔等待重试',available_at=?,lease_token=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE id=? AND lease_token=? AND status='running' AND lease_until>?",t+3600*preferences.sync_hours,t,job.id,lease,t).run();
+      return json({ok:true,deferred:true});
+    }
     const failure=String(b.error||'处理失败').slice(0,500);
     if(/requires verification|cookies are no longer valid|cookies have expired|rate limiting|HTTP 403/.test(failure)) {
       await stmt(env,`INSERT INTO execution_policy(user_id,cooldown_until) VALUES(?,?+1800)
@@ -907,7 +922,9 @@ async function executorApi(request, env, url) {
     statements.push(
       stmt(
         env,
-        `UPDATE sources SET next_scan=CASE WHEN kind='video' THEN ? ELSE ? END WHERE id=? AND ${live}`,
+        `UPDATE sources SET waiting_replay=CASE WHEN kind='video' AND ?=1 THEN 1 ELSE 0 END,next_scan=CASE WHEN kind='video' AND ?=0 THEN ? ELSE ? END WHERE id=? AND ${live}`,
+        entries.length===0?1:0,
+        entries.length===0?1:0,
         t + 315360000,
         t + 3600 * (await stmt(env,"SELECT sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first()).sync_hours,
         job.source_id,
@@ -939,11 +956,8 @@ async function executorApi(request, env, url) {
     413,
     "音频超过单文件上限或缺少 Content-Length",
   );
-  requireValue(
-    request.headers.get("content-type") === "audio/mpeg",
-    415,
-    "仅支持 MP3",
-  );
+  const media=audioMedia({object_key:job.encoding_profile.startsWith("m4a:")?"audio.m4a":"audio.mp3"});
+  requireValue(request.headers.get("content-type") === media.mime,415,"音频格式与任务不匹配");
   const duration = Number(request.headers.get("x-audio-duration") || 0);
   const publishedAt = Number(request.headers.get("x-published-at")) || null;
   requireValue(publishedAt === null || (Number.isInteger(publishedAt) && publishedAt > 0 && publishedAt <= t + 86400), 400, "发布日期无效");
@@ -952,7 +966,7 @@ async function executorApi(request, env, url) {
     400,
     "时长无效",
   );
-  const key = `${job.user_id}/${job.channel_id}/${job.episode_id}/${lease}.mp3`;
+  const key = `${job.user_id}/${job.channel_id}/${job.episode_id}/${lease}.${media.extension}`;
   const reserve = () => stmt(
     env,
     `INSERT OR IGNORE INTO object_gc(object_key,user_id,size,not_before,job_id,lease_token,created_at)
@@ -994,7 +1008,7 @@ async function executorApi(request, env, url) {
     const limited = new FixedLengthStream(bytes);
     const [object] = await Promise.all([
       env.AUDIO.put(key, limited.readable, {
-        httpMetadata: { contentType: "audio/mpeg" },
+        httpMetadata: { contentType: media.mime },
       }),
       request.body.pipeTo(limited.writable, { signal: uploadAbort.signal }),
     ]);
@@ -1063,7 +1077,7 @@ async function executorApi(request, env, url) {
 
 async function feed(request, env, url) {
   const m = url.pathname.match(
-    /^\/(feed|media|chapters)\/([a-f0-9]{64})(?:\.xml|\/([\w-]+)\.(?:mp3|json))$/,
+    /^\/(feed|media|chapters)\/([a-f0-9]{64})(?:\.xml|\/([\w-]+)\.(?:mp3|m4a|json))$/,
   );
   requireValue(m, 404, "链接不存在");
   requireValue(
@@ -1092,7 +1106,7 @@ async function feed(request, env, url) {
     return new Response(
       request.method === "HEAD"
         ? null
-        : makeFeed({...channel,sort_mode:channel.effective_sort_mode}, sortEpisodes(episodes.results, channel.effective_sort_mode).slice(0, channel.feed_limit), url.origin),
+        : makeFeed({...channel,sort_mode:effectiveSortMode(channel)}, sortEpisodes(episodes.results, effectiveSortMode(channel)).slice(0, channel.feed_limit), url.origin),
       {
         headers: {
           "Content-Type": "application/rss+xml; charset=utf-8",
@@ -1101,7 +1115,7 @@ async function feed(request, env, url) {
       },
     );
   }
-  requireValue(m[1] === "media" && m[3] && url.pathname.endsWith('.mp3'), 404, "链接不存在");
+  requireValue(m[1] === "media" && m[3] && (/\.(mp3|m4a)$/.test(url.pathname)), 404, "链接不存在");
   const episode = await stmt(
     env,
     "SELECT object_key FROM episodes WHERE id=? AND channel_id=? AND object_key IS NOT NULL",
@@ -1112,7 +1126,7 @@ async function feed(request, env, url) {
   const meta = await env.AUDIO.head(episode.object_key);
   requireValue(meta, 404, "音频不存在");
   const headers = new Headers({
-    "Content-Type": "audio/mpeg",
+    "Content-Type": audioMedia(episode).mime,
     "Accept-Ranges": "bytes",
     "Cache-Control": "private, no-store",
     ETag: meta.httpEtag,

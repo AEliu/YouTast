@@ -21,5 +21,11 @@ elif "--extract-audio" in sys.argv:
         check=True,
     )
     Path("audio.info.json").write_text(json.dumps(metadata), encoding="utf-8")
+elif '--print-to-file' in sys.argv:
+    subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','sine=frequency=440:duration=2',
+                    '-c:a','aac','-b:a','128k','-y','source.m4a'],check=True)
+    metadata['chapters']=[{'start_time':0,'title':'Start'},{'start_time':1,'title':'Second'}]
+    Path('source.info.json').write_text(json.dumps(metadata),encoding='utf-8')
+    Path('download-path.txt').write_text('source.m4a',encoding='utf-8')
 else:
     raise SystemExit("Unsupported fixture invocation")

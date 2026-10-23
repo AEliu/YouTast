@@ -1,3 +1,4 @@
+import {audioMedia} from './audio.js';
 export const now = () => Math.floor(Date.now() / 1000);
 export const id = () => crypto.randomUUID();
 export const secret = () =>
@@ -85,15 +86,15 @@ export function youtubeSource(value) {
       url: `https://www.youtube.com/playlist?list=${u.searchParams.get("list")}`,
     };
   if (
-    /^\/(channel\/UC[\w-]{22}|@[\p{L}\p{N}_.%-]{1,100})(\/videos)?\/?$/u.test(
+    /^\/(channel\/UC[\w-]{22}|@[\p{L}\p{N}_.%-]{1,100})(\/(videos|streams))?\/?$/u.test(
       u.pathname,
     )
   )
     return {
       kind: "author",
-      url: `https://www.youtube.com${u.pathname.replace(/\/(videos)?\/?$/, "")}/videos`,
+      url: `https://www.youtube.com${u.pathname.replace(/\/(videos|streams)?\/?$/, "")}/${/\/streams\/?$/.test(u.pathname)?'streams':'videos'}`,
     };
-  throw new Error("请使用视频、playlist 或作者主页链接");
+  throw new Error("请使用视频、playlist、作者主页或作者直播列表链接");
 }
 export class HttpError extends Error {
   constructor(status, message) {
@@ -118,6 +119,6 @@ export function makeFeed(channel, episodes, origin) {
     // Keep timecodes in a single contiguous block instead of separated paragraphs.
     const description=[chapterText,meta.description||e.title,meta.author,original].filter(Boolean).join('\n\n');
     const html=`<p>${xml(description).replace(/\n/g,'<br/>')}</p>`;
-    return `<item><title>${xml(e.title)}</title><guid isPermaLink="false">${xml(e.id)}</guid><link>${xml(original)}</link><description>${xml(description)}</description><content:encoded>${xml(html)}</content:encoded>${meta.author?`<itunes:author>${xml(meta.author)}</itunes:author>`:''}${meta.thumbnail?`<itunes:image href="${xml(meta.thumbnail)}"/>`:''}${chapters.length?`<podcast:chapters url="${xml(`${origin}/chapters/${channel.feed_token}/${e.id}.json`)}" type="application/json+chapters"/>`:''}<pubDate>${new Date((e.published_at ?? e.created_at) * 1000).toUTCString()}</pubDate>${serial ? `<itunes:episode>${i + 1}</itunes:episode>` : ""}<enclosure url="${xml(`${base}/${e.id}.mp3`)}" length="${e.size}" type="audio/mpeg"/><itunes:duration>${e.duration}</itunes:duration></item>`;
+    return `<item><title>${xml(e.title)}</title><guid isPermaLink="false">${xml(e.id)}</guid><link>${xml(original)}</link><description>${xml(description)}</description><content:encoded>${xml(html)}</content:encoded>${meta.author?`<itunes:author>${xml(meta.author)}</itunes:author>`:''}${meta.thumbnail?`<itunes:image href="${xml(meta.thumbnail)}"/>`:''}${chapters.length?`<podcast:chapters url="${xml(`${origin}/chapters/${channel.feed_token}/${e.id}.json`)}" type="application/json+chapters"/>`:''}<pubDate>${new Date((e.published_at ?? e.created_at) * 1000).toUTCString()}</pubDate>${serial ? `<itunes:episode>${i + 1}</itunes:episode>` : ""}<enclosure url="${xml(`${base}/${e.id}.${audioMedia(e).extension}`)}" length="${e.size}" type="${audioMedia(e).mime}"/><itunes:duration>${e.duration}</itunes:duration></item>`;
   }).join('')}</channel></rss>`;
 }

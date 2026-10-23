@@ -38,16 +38,16 @@ def main():
     assert item is not None, "RSS is missing the converted episode"
     enclosure = item.find("enclosure")
     declared_length = int(enclosure.get("length", "0"))
-    assert enclosure.get("type") == "audio/mpeg" and 0 < declared_length <= 5_000_000
+    assert enclosure.get("type") in ("audio/mpeg","audio/mp4") and 0 < declared_length <= 5_000_000
     with request(enclosure.get("url")) as response:
         audio = response.read(5_000_001)
         assert response.status == 200 and len(audio) == declared_length
-        assert response.headers.get("Content-Type", "").split(";")[0] == "audio/mpeg"
+        assert response.headers.get("Content-Type", "").split(";")[0] == enclosure.get("type")
     with request(enclosure.get("url"), "HEAD") as response:
         assert response.status == 200 and int(response.headers["Content-Length"]) == len(audio)
     with request(enclosure.get("url"), headers={"Range": "bytes=0-1023"}) as response:
         assert response.status == 206 and response.read(2048) == audio[:1024]
-    target = ROOT / ".wrangler/windows-executor/rss-enclosure.mp3"
+    target = ROOT / ".wrangler/windows-executor/rss-enclosure.audio"
     target.write_bytes(audio)
     decode = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(target), "-f", "null", "-"], capture_output=True, timeout=60, creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     assert decode.returncode == 0 and not decode.stderr, "Audio failed full FFmpeg decode"

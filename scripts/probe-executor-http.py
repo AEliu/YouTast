@@ -9,8 +9,8 @@ sys.path.insert(0, str(root / "executor"))
 from agent import API
 values = dict(line.split("=", 1) for line in (root / ".secrets/windows-executor.env").read_text().splitlines() if "=" in line)
 try:
-    result = API(values["YOUTAST_URL"], values["YOUTAST_TOKEN"]).post("/api/executor/claim")
-    print("Python API request succeeded; job present:", result.get("job") is not None)
+    result = API(values["YOUTAST_URL"], values["YOUTAST_TOKEN"]).post("/api/executor/status")
+    print("Python API request succeeded; active jobs:", result["activeJobs"])
 except urllib.error.HTTPError as error:
     print("Python API HTTP status:", error.code)
     content_type = error.headers.get("Content-Type", "")

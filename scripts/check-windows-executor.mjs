@@ -17,15 +17,13 @@ const parse = (text) =>
         return [line.slice(0, i), line.slice(i + 1)];
       }),
   );
-const owner = parse(
-  await readFile(resolve(root, ".secrets/windows-owner.env"), "utf8"),
-);
+const testVideo = process.argv.includes("--test-video");
 const executor = parse(
   await readFile(resolve(root, ".secrets/windows-executor.env"), "utf8"),
 );
-const origin = owner.YOUTAST_URL;
+const origin = executor.YOUTAST_URL;
 const originUrl = new URL(origin);
-if (originUrl.protocol !== "https:" || originUrl.username || originUrl.password || originUrl.pathname !== "/" || originUrl.search || originUrl.hash || executor.YOUTAST_URL !== origin)
+if (originUrl.protocol !== "https:" || originUrl.username || originUrl.password || originUrl.pathname !== "/" || originUrl.search || originUrl.hash)
   throw new Error("Unexpected deployment origin");
 let cookie = "",
   channelId,
@@ -37,7 +35,7 @@ const channelTitle = keepChannel
   : "Temporary Windows connectivity check";
 const stateDir = resolve(root, ".wrangler/windows-executor");
 await mkdir(stateDir, { recursive: true });
-async function api(path, data, method = data ? "POST" : "GET") {
+async function api(path, data, method = data ? "POST" : "GET", machineAuth = false) {
   let response;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -50,6 +48,7 @@ async function api(path, data, method = data ? "POST" : "GET") {
           "Content-Type": "application/json",
           "User-Agent": "YouTast-Setup/0.1",
           Connection: "close",
+          ...(machineAuth ? { Authorization: `Bearer ${executor.YOUTAST_TOKEN}` } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
         },
         body: method === "GET" ? undefined : JSON.stringify(data || {}),
@@ -112,21 +111,17 @@ try {
   }
   if (!processState)
     throw new Error("The Windows runner is not currently running");
-  await api("/api/auth/login", {
-    username: owner.YOUTAST_USERNAME,
-    password: owner.YOUTAST_PASSWORD,
-  });
   let machine, lastSeen;
   const connectionDeadline = Date.now() + 400_000;
   while (Date.now() < connectionDeadline) {
-    const snapshot = await api("/api/dashboard");
-    machine = snapshot.executors.find(
-      (item) => item.id === executor.YOUTAST_EXECUTOR_ID,
-    );
-    lastSeen = machine?.last_seen;
+    const snapshot = await api("/api/executor/status", {}, "POST", true);
+    if (snapshot.id !== executor.YOUTAST_EXECUTOR_ID)
+      throw new Error("The configured executor ID does not match its token");
+    machine = snapshot;
+    lastSeen = machine.lastSeen;
     if (
-      machine?.last_seen >= processState.started_at &&
-      Date.now() / 1000 - machine.last_seen <= 400
+      lastSeen >= processState.started_at &&
+      Date.now() / 1000 - lastSeen <= 400
     )
       break;
     machine = null;
@@ -147,9 +142,18 @@ try {
   }
   console.log(`Connected executor: ${machine.name}`);
   console.log(
-    `Last cloud check-in (Asia/Shanghai): ${new Date(machine.last_seen * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`,
+    `Last cloud check-in (Asia/Shanghai): ${new Date(lastSeen * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`,
   );
-  if (process.argv.includes("--test-video")) {
+  result.active_jobs = machine.activeJobs;
+  result.capabilities = { rate_control: machine.rateControlVersion, content_window: machine.windowControlVersion, audio_control:machine.audioControlVersion, replay_control:machine.replayControlVersion };
+  if (testVideo) {
+    const owner = parse(await readFile(resolve(root, ".secrets/windows-owner.env"), "utf8"));
+    if (owner.YOUTAST_URL !== origin || (executor.YOUTAST_USERNAME && owner.YOUTAST_USERNAME !== executor.YOUTAST_USERNAME))
+      throw new Error("Smoke-test account does not match the configured executor owner; use the app to submit a video for this account");
+    await api("/api/auth/login", { username: owner.YOUTAST_USERNAME, password: owner.YOUTAST_PASSWORD });
+    const dashboard = await api("/api/dashboard");
+    if (!dashboard.executors.some(item => item.id === executor.YOUTAST_EXECUTOR_ID))
+      throw new Error("Smoke-test account does not own this executor; no test task was created");
     channelId = (
       await api("/api/channels", {
         title: channelTitle,
@@ -201,7 +205,8 @@ try {
         const channel = dashboard.channels.find(
           (item) => item.id === channelId,
         );
-        const url = `${origin}/media/${channel.feed_token}/${episode.id}.mp3`;
+        const extension=episode.object_key.endsWith('.m4a')?'m4a':'mp3';
+        const url = `${origin}/media/${channel.feed_token}/${episode.id}.${extension}`;
         const rss = await readArtifact(
           `${origin}/feed/${channel.feed_token}.xml`,
           true,
@@ -209,7 +214,7 @@ try {
         if (!rss.includes(url))
           throw new Error("Completed episode is missing from RSS");
         const audio = await readArtifact(url);
-        const file = resolve(stateDir, "smoke.mp3");
+        const file = resolve(stateDir, `smoke.${extension}`);
         await writeFile(file, audio);
         const { stdout } = await promisify(execFile)(
           "ffprobe",
@@ -226,10 +231,10 @@ try {
         );
         const probe = JSON.parse(stdout);
         if (
-          probe.streams?.[0]?.codec_name !== "mp3" ||
+          !["mp3","aac"].includes(probe.streams?.[0]?.codec_name) ||
           Number(probe.format?.duration) < 1
         )
-          throw new Error("Downloaded audio failed MP3 inspection");
+          throw new Error("Downloaded audio failed AAC/MP3 inspection");
         result.status = "passed";
         result.duration = Number(probe.format.duration);
         if (keepChannel) {
@@ -251,7 +256,7 @@ try {
           result.channel_retained = true;
         }
         console.log(
-          "PASS: running Windows executor -> real YouTube -> MP3 -> private R2 -> RSS -> FFprobe",
+          "PASS: running Windows executor -> real YouTube -> audio -> private R2 -> RSS -> FFprobe",
         );
         break;
       }

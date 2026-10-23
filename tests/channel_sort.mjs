@@ -51,9 +51,11 @@ try {
  const d=await api('/api/dashboard');feedToken=d.channels.find(c=>c.id===cid).feed_token;
  const guids=[...(await feed()).matchAll(/<guid isPermaLink="false">(.*?)<\/guid>/g)].map(m=>m[1]).sort();
  assert.deepEqual(order(await feed()),expected([0,1,3,2,4,5]));
+ assert.deepEqual((await api(`/api/channels/${cid}/detail`)).episodes.map(e=>e.title),expected([0,1,3,2,4,5]));
  for(const [sort_mode,indexes] of Object.entries({added_asc:[0,1,2,3,4,5],added_desc:[5,4,3,2,1,0],published_asc:[4,3,1,0,2,5],published_desc:[5,2,0,1,3,4]})) {
    await api(`/api/channels/${cid}/sort`,{sort_mode});
    assert.deepEqual(order(await feed()),expected(indexes));
+   const detail=await api(`/api/channels/${cid}/detail`);assert.deepEqual(detail.episodes.map(e=>e.title),expected(indexes),'Detail pagination uses RSS channel order');
    assert.deepEqual([...(await feed()).matchAll(/<guid isPermaLink="false">(.*?)<\/guid>/g)].map(m=>m[1]).sort(),guids);
  }
  await api(`/api/channels/${cid}/sort`,{sort_mode:'sql injection'},{status:400});

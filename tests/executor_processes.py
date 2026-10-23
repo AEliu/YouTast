@@ -1,4 +1,4 @@
-"""Exercise two production agent processes with offline source fixtures and real MP3.
+"""Exercise two production agent processes with offline source fixtures and real AAC.
 
 Requires the local integration server, FFmpeg and FFprobe. Never uses YouTube,
 and does not prove real upstream downloads or deployment on separate machines.
@@ -104,7 +104,7 @@ def main():
                     raise RuntimeError("An executor task failed: " + errors[0])
                 time.sleep(0.5)
             else:
-                raise RuntimeError("Timed out waiting for six real MP3 episodes")
+                raise RuntimeError("Timed out waiting for six real AAC episodes")
             assert peak_running>=2, 'Parallel tasks were not observed'
             assert len(dashboard["episodes"]) == len(ids)
             assert all(j["status"] == "done" and j["attempts"] == 1 for j in dashboard["jobs"])
@@ -113,10 +113,11 @@ def main():
                 feed = ET.fromstring(response.read())
             enclosures = feed.findall("./channel/item/enclosure")
             assert len(enclosures) == len(ids)
+            assert all(e.get("type")=="audio/mp4" and e.get("url").endswith(".m4a") for e in enclosures)
             with urllib.request.urlopen(enclosures[0].attrib["url"], timeout=30) as response:
                 audio = response.read()
             assert len(audio) == int(enclosures[0].attrib["length"])
-            downloaded = temp_dir / "podcast.mp3"
+            downloaded = temp_dir / "podcast.m4a"
             downloaded.write_bytes(audio)
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "stream=codec_name:format=duration",
@@ -124,10 +125,10 @@ def main():
                 capture_output=True, text=True, check=True,
             )
             probe = json.loads(result.stdout)
-            assert probe["streams"][0]["codec_name"] == "mp3"
+            assert probe["streams"][0]["codec_name"] == "aac"
             assert 2 <= float(probe["format"]["duration"]) < 3
             print("PASS: two production executor processes completed 6 scans and 6 conversions exactly once")
-            print("PASS: real FFmpeg MP3 -> Python streamed upload -> R2 -> RSS enclosure -> FFprobe decode")
+            print("PASS: real FFmpeg AAC/M4A -> Python streamed upload -> R2 -> RSS enclosure -> FFprobe decode")
     finally:
         for process in processes:
             stop_process(process)

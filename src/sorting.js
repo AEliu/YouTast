@@ -1,4 +1,21 @@
-export const SORT_MODES = ['source', 'published_asc', 'published_desc', 'added_asc', 'added_desc'];
+export const SORT_MODES = ['source', 'source_grouped', 'published_asc', 'published_desc', 'added_asc', 'added_desc'];
+
+// Automatic collection order interleaves every source; explicit choices always win.
+export function effectiveSortMode(channel) {
+  const mode = channel.effective_sort_mode ?? channel.sort_mode ?? 'source';
+  if (mode === 'source') return Number(channel.latest_limit) > 0 ? 'published_desc' : 'source';
+  return mode === 'source_grouped' ? 'source' : mode;
+}
+
+// Used after a CTE computes missing_author_dates across the visible collection.
+// Every fragment is a constant; user input is never interpolated into SQL.
+export function episodeOrderSql(mode) {
+  const fields=['COALESCE(source_order,0)','COALESCE(added_position,source_position,0)','created_at','id'];
+  const added=fields.map(f=>`${f} ${mode==='added_desc'?'DESC':'ASC'}`).join(',');
+  if(mode==='added_asc'||mode==='added_desc')return added;
+  if(mode==='published_asc'||mode==='published_desc')return `published_at IS NULL ASC,published_at ${mode==='published_desc'?'DESC':'ASC'},${added}`;
+  return `COALESCE(source_order,0) ASC,CASE WHEN source_kind='author' THEN CASE WHEN missing_author_dates=1 THEN -COALESCE(source_position,0) ELSE published_at END ELSE COALESCE(source_position,0) END ASC,${added}`;
+}
 
 // Never use object completion time. Provenance is captured when sources are added/scanned.
 export function sortEpisodes(episodes, mode = 'source') {

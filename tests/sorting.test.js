@@ -1,8 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sortEpisodes} from '../src/sorting.js';
+import {sortEpisodes, effectiveSortMode} from '../src/sorting.js';
 import {makeFeed} from '../src/lib.js';
 const ep=(id,source_order,source_kind,source_position,published_at=null)=>({id,source_order,source_kind,source_position,published_at,created_at:100,title:id,video_id:'abcdefghijk',size:3,duration:1});
+
+test('latest collections interleave authors, playlists and single videos unless explicitly overridden',()=>{
+  const list=[ep('author-new',1,'author',1,500),ep('author-old',1,'author',2,200),ep('playlist',2,'playlist',1,400),ep('single',3,'video',1,300),ep('undated',1,'author',3)];
+  const c={effective_sort_mode:'source',latest_limit:5};
+  const ordered=sortEpisodes(list,effectiveSortMode(c));
+  assert.deepEqual(ordered.map(e=>e.id),['author-new','playlist','single','author-old','undated']);
+  assert.equal(effectiveSortMode({...c,latest_limit:0}),'source');
+  assert.equal(effectiveSortMode({...c,effective_sort_mode:'published_asc'}),'published_asc');
+  assert.equal(effectiveSortMode({...c,effective_sort_mode:'source_grouped'}),'source');
+  assert.equal(effectiveSortMode({sort_mode:'source',latest_limit:5}),'published_desc');
+  assert.ok(makeFeed({title:'Collection',feed_token:'test',sort_mode:effectiveSortMode(c)},ordered,'https://example.com').includes('<itunes:type>episodic</itunes:type>'));
+});
 test('source defaults preserve playlist order, author chronology and source addition order',()=>{
   const list=[ep('single-later',4,'video',1),ep('author-new',2,'author',1,300),ep('playlist-two',1,'playlist',2,50),ep('single-first',3,'video',1),ep('author-old',2,'author',2,200),ep('playlist-one',1,'playlist',1,400)];
   assert.deepEqual(sortEpisodes(list).map(e=>e.id),['playlist-one','playlist-two','author-old','author-new','single-first','single-later']);

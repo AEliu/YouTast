@@ -1,3 +1,4 @@
+import {renderChannelDetail} from './channel-detail.js';
 import { readApiResponse } from "./api-response.js";
 import {renderAdmin,adminUserFields,limitBytes,invitationFields} from './admin-ui.js';
 import {subscriptionLinks,podcastClients} from './subscribe-links.js';
@@ -22,9 +23,15 @@ let data = null,
   view = "channels",
   register = false,
   refreshing = false,
+  refreshAgain = false,
+  detailData = null,
+  detailError = "",
+  detailId = "",
+  detailTab = "episodes",
+  detailOffset = 0,
   retryAt = 0,
   retryMessage = "";
-const sortNames = { source: "按来源自动排序", published_asc: "发布时间：从早到晚", published_desc: "发布时间：从晚到早", added_asc: "加入顺序：先加入在前", added_desc: "加入顺序：后加入在前" };
+const sortNames = { source: "自动（最新合集按时间混排）", source_grouped: "按来源分组", published_asc: "发布时间：从早到晚", published_desc: "发布时间：从晚到早", added_asc: "加入顺序：先加入在前", added_desc: "加入顺序：后加入在前" };
 const statusNames = {
   queued: "等待处理",
   running: "处理中",
@@ -32,6 +39,7 @@ const statusNames = {
   failed: "失败",
 };
 const viewInfo = {
+  channel: ["频道详情", "这个频道的节目、来源与处理进度。"],
   channels: ["我的频道", "把值得一听的内容，放进自己的声音世界。"],
   episodes: ["声音资料库", "所有准备好的声音，都在这里。"],
   jobs: ["任务队列", "从发现内容到转成声音，每一步都有迹可循。"],
@@ -71,11 +79,25 @@ function showAuth() {
   adminData = null;
   executionData = null;
 }
+function readRoute() {
+  const match=location.hash.match(/^#channel\/([\w-]+)(?:\/(episodes|sources|jobs|archive))?(?:\/(\d+))?$/);
+  detailData=null;detailError='';
+  if(match){view='channel';detailId=match[1];detailTab=match[2]||'episodes';detailOffset=Number(match[3]||0);}
+  else {const name=location.hash.slice(1);view=Object.hasOwn(viewInfo,name)&&name!=='channel'?name:'channels';detailId='';}
+}
 async function refresh() {
-  if (refreshing || Date.now() < retryAt) return;
+  if(Date.now()<retryAt)return;
+  if(refreshing){refreshAgain=true;return;}
+  const route=location.hash;
   refreshing = true;
   try {
     data = await api("/api/dashboard");
+    if(route!==location.hash){refreshAgain=true;return;}
+    if(view==='channel') {
+      try {detailData=await api(`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}`);detailError='';}
+      catch(e){if(e.status===401)throw e;detailData=null;detailError=e.message;}
+    }
+    if(route!==location.hash){refreshAgain=true;return;}
     if(view==='executors')executionData=await api('/api/execution-policy');
     if(view==='admin'&&data.user.role!=='admin'){view='channels';adminData=null;}
     $("#initial").hidden = true;
@@ -89,19 +111,22 @@ async function refresh() {
     } else toast(e.message);
   } finally {
     refreshing = false;
+    if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}
   }
 }
 function render() {
+  $('#app').dataset.pageView=view;
   $('#admin-nav').hidden=data.user.role!=='admin';
   $("#username").textContent = data.user.username;
   $("#avatar").textContent = data.user.username[0].toUpperCase();
   $("#nav-count").textContent = data.channels.length;
   $("#page-title").innerHTML = `${viewInfo[view][0]}<span>.</span>`;
+  if(view==='channel'&&detailData)$("#page-title").textContent=detailData.channel.title;
   $("#page-description").textContent = viewInfo[view][1];
   $("#breadcrumb").textContent = `工作空间 / ${viewInfo[view][0]}`;
   document
     .querySelectorAll("[data-view]")
-    .forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+    .forEach((b) => b.classList.toggle("active", b.dataset.view === (view==='channel'?'channels':view)));
   $("#new-channel").hidden = view !== "channels";
   $("#stats").hidden = view !== "channels";
   $("#stat-channels").innerHTML = `${data.channels.length}<small>个</small>`;
@@ -112,15 +137,16 @@ function render() {
     `${(data.bytes / 1e6).toFixed(1)}<small>MB / ${(data.maxUserBytes / 1e9).toFixed(0)} GB</small>`;
   const content = $("#content");
   if(view==='admin')content.innerHTML=renderAdmin(adminData);
+  if(view==='channel')content.innerHTML=detailData?renderChannelDetail(detailData,{escape,sortNames,statusNames}):`<a class="small-button" href="#channels">← 返回我的频道</a><div class="empty" role="status">${escape(detailError||'正在加载频道详情…')}</div>`;
   if (view === "channels")
-    content.innerHTML = `<div class="section-bar"><strong>你的订阅频道 <small> / ${String(data.channels.length).padStart(2, "0")}</small></strong><small>只有你决定听什么</small></div><div class="grid">${data.channels.map((c, i) => `<article class="channel-card"><div class="channel-art art-${i % 5}"><span class="art-tag">PRIVATE PODCAST</span><span class="art-symbol" aria-hidden="true">${["◉", "≋", "∿", "◎", "✳"][i % 5]}</span><span class="art-corner">YOUTAST ORIGINAL SPACE</span></div><div class="card-body"><h3>${escape(c.title)}</h3><p>${escape(c.description || "留给好内容的一方声音空间。")}</p><div class="card-meta"><span>${c.episode_count} 集声音${c.archived_count?` · ${c.archived_count} 集旧音频仍保留缓存`:""} · ${data.sources.filter((s) => s.channel_id === c.id).length} 个来源</span><span>私人频道 ↗</span></div><div class="card-actions"><button class="small-button" data-action="sources" data-id="${c.id}">＋ 来源</button><button class="small-button" data-action="rss" data-id="${c.id}">▦ 扫码订阅</button><button class="small-button" data-action="channel-settings" data-id="${c.id}">频道设置</button><button class="small-button" data-action="sort" data-id="${c.id}">排序</button><button class="small-button" data-action="sync" data-id="${c.id}">同步</button><button class="small-button danger" data-action="delete-channel" data-id="${c.id}">删除</button></div></div></article>`).join("")}<button class="add-card" data-action="new-channel"><span>＋</span><strong>开始一个新的声音频道</strong><small>视频 / Playlist / 创作者</small></button></div><div class="intro-strip"><div class="intro-icon">♫</div><div><strong>把你的频道，带到喜欢的 Podcast 播放器。</strong><p>添加 YouTube 来源 → 连接执行器 → 等待音频生成 → 使用私人 RSS 订阅。订阅链接是访问凭证，请妥善保管。</p></div></div>`;
+    content.innerHTML = `<div class="section-bar"><strong>你的订阅频道 <small> / ${String(data.channels.length).padStart(2, "0")}</small></strong><small>只有你决定听什么</small></div><div class="grid">${data.channels.map((c, i) => `<article class="channel-card" data-channel-id="${c.id}"><a class="channel-link" href="#channel/${c.id}" aria-label="打开 ${escape(c.title)} 的频道详情"><div class="channel-art art-${i % 5}"><span class="art-tag">PRIVATE PODCAST</span><span class="art-symbol" aria-hidden="true">${["◉", "≋", "∿", "◎", "✳"][i % 5]}</span><span class="art-corner">YOUTAST ORIGINAL SPACE</span></div></a><div class="card-body"><h3><a class="channel-link" href="#channel/${c.id}">${escape(c.title)}</a></h3><p>${escape(c.description || "留给好内容的一方声音空间。")}</p><div class="card-meta"><span>${c.episode_count} 集声音${c.archived_count?` · ${c.archived_count} 集旧音频仍保留缓存`:""} · ${data.sources.filter((s) => s.channel_id === c.id).length} 个来源</span><span>私人频道 ↗</span></div><div class="card-actions"><button class="small-button" data-action="sources" data-id="${c.id}">＋ 来源</button><button class="small-button" data-action="rss" data-id="${c.id}">▦ 扫码订阅</button><button class="small-button" data-action="channel-settings" data-id="${c.id}">频道设置</button><button class="small-button" data-action="sort" data-id="${c.id}">排序</button><button class="small-button" data-action="sync" data-id="${c.id}">同步</button><button class="small-button danger" data-action="delete-channel" data-id="${c.id}">删除</button></div></div></article>`).join("")}<button class="add-card" data-action="new-channel"><span>＋</span><strong>开始一个新的声音频道</strong><small>视频 / Playlist / 创作者</small></button></div><div class="intro-strip"><div class="intro-icon">♫</div><div><strong>把你的频道，带到喜欢的 Podcast 播放器。</strong><p>添加 YouTube 来源 → 连接执行器 → 等待音频生成 → 使用私人 RSS 订阅。订阅链接是访问凭证，请妥善保管。</p></div></div>`;
   if (view === "episodes")
     content.innerHTML = `<div class="section-bar"><strong>最近 100 集</strong><small>删除音频可释放存储空间</small></div>${
       data.episodes.length
         ? `<div class="list">${data.episodes
             .map((e) => {
               const c = data.channels.find((c) => c.id === e.channel_id);
-              return `<article class="list-row"><div class="list-icon">♫</div><div class="list-details"><strong>${escape(e.title)}</strong><p>${escape(c?.title)} · ${Math.floor(e.duration / 60)} 分钟 · ${e.object_key ? `${(e.size / 1e6).toFixed(1)} MB` : (e.expired_at ? (e.cleanup_reason==="quota"?"空间不足已清理":e.cleanup_reason==="manual"?"已手动删除":"已按保留期清理") : "等待音频")}</p></div><button class="small-button" data-action="episode-details" data-id="${e.id}">简介 / 章节</button>${e.object_key ? `<audio controls preload="none" data-audio-id="${e.id}" src="/media/${c.feed_token}/${e.id}.mp3"></audio><button class="small-button danger" data-action="delete-episode" data-id="${e.id}">删除音频</button>` : (e.expired_at ? `<button class="small-button" data-action="regenerate" data-id="${e.id}">重新生成</button>` : '<span class="badge queued">待处理</span>')}</article>`;
+              return `<article class="list-row"><div class="list-icon">♫</div><div class="list-details"><strong>${escape(e.title)}</strong><p>${escape(c?.title)} · ${Math.floor(e.duration / 60)} 分钟 · ${e.object_key ? `${(e.size / 1e6).toFixed(1)} MB` : (e.expired_at ? (e.cleanup_reason==="quota"?"空间不足已清理":e.cleanup_reason==="manual"?"已手动删除":"已按保留期清理") : "等待音频")}</p></div><button class="small-button" data-action="episode-details" data-id="${e.id}">简介 / 章节</button>${e.object_key ? `<audio controls preload="none" data-audio-id="${e.id}" src="/media/${c.feed_token}/${e.id}.${e.object_key.endsWith('.m4a')?'m4a':'mp3'}"></audio><button class="small-button danger" data-action="delete-episode" data-id="${e.id}">删除音频</button>` : (e.expired_at ? `<button class="small-button" data-action="regenerate" data-id="${e.id}">重新生成</button>` : '<span class="badge queued">待处理</span>')}</article>`;
             })
             .join("")}</div>`
         : empty("还没有单集。为频道添加来源，并运行执行器，声音就会来到这里。")
@@ -129,7 +155,7 @@ function render() {
     content.innerHTML = `<div class="section-bar"><strong>最近 80 项任务</strong><small>租约 10 分钟 · 最多自动尝试 3 次</small></div>${data.jobs.length ? `<div class="list">${data.jobs.map((j) => `<article class="list-row"><div class="list-icon">${j.kind === "scan" ? "⌕" : "♫"}</div><div class="list-details"><strong>${escape(j.episode_title || j.channel_title)}</strong><p>${j.kind === "scan" ? "发现视频" : "转换音频"} · ${j.reused ? "已复用已有音频" : `已尝试 ${j.attempts} 次`}${j.error ? ` · ${escape(j.error)}` : ""}</p></div><span class="badge ${j.status}">${statusNames[j.status]}</span>${j.status === "failed" ? `<button class="small-button" data-action="retry" data-id="${j.id}">重试</button>` : ""}</article>`).join("")}</div>` : empty("暂无任务。添加频道来源后，执行器会领取扫描和转码任务。")}`;
   if (view === "settings") content.innerHTML = renderSettings();
   if (view === "executors")
-    content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数及最新N。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
+    content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1||e.audio_control_version!==1||e.replay_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数、最新N、AAC音频及直播回放。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
 }
 function empty(text) {
   return `<div class="empty">${text}</div>`;
@@ -156,9 +182,10 @@ $('#content').addEventListener('submit',async event=>{
   await loadAdmin();toast('站点设置已保存');
  }catch(e){toast(e.message);}
 });
-const preferenceLabels={retention_days:'保留天数（0 永久）',text_language:'标题 / 简介首选语言',bitrate:'MP3 码率',scan_limit:'每个来源候选数量',latest_limit:'合并全部来源取最新 N 条（0 不限制）',sync_hours:'同步间隔（小时）',feed_limit:'RSS 最多展示集数',sort_mode:'节目排序',storage_cleanup:'空间不足时清理音频'};
+const preferenceLabels={retention_days:'保留天数（0 永久）',text_language:'标题 / 简介首选语言',audio_mode:'音频处理方式',bitrate:'转码码率',scan_limit:'每个来源候选数量',latest_limit:'合并全部来源取最新 N 条（0 不限制）',sync_hours:'同步间隔（小时）',feed_limit:'RSS 最多展示集数',sort_mode:'节目排序',storage_cleanup:'空间不足时清理音频'};
 const languageLabels={original:'保留原文',zh:'中文',en:'English',ja:'日本語',ko:'한국어',es:'Español',fr:'Français',de:'Deutsch','zh-CN':'简体中文','zh-TW':'繁體中文'};
 function optionLabel(key,value) {
+  if(key==='audio_mode')return {source:'优先原始 AAC（免转码）',compact:'节省空间（AAC）',mp3:'MP3（兼容旧播放器）'}[value];
   if(key==='sort_mode')return sortNames[value];
   if(key==='text_language')return languageLabels[value];
   if(key==='storage_cleanup')return value==='oldest'?'自动清理较旧音频':'关闭，空间不足时停止上传';
@@ -185,7 +212,7 @@ function formPreferences(form,channel=false) {
   }
   return result;
 }
-const policyHelp='<p class="muted">最新 N 条按本频道全部来源合并后的发布时间选取，不给每个作者固定分配名额；播放顺序仍按你选择的排序。旧音频退出列表后保留缓存，增加 N 可以重新显示。</p><details class="preference-help"><summary>数量范围与空间清理规则</summary><p>候选数量和最新N支持1–100；最新N设0关闭限制。保留天数0–3650（0永久），同步间隔1–168小时，RSS集数1–1000。频道中的数字留空则跟随用户默认。</p><p>会至少检查每个来源的N条候选，再合并筛选；作者取YouTube最新列表，playlist按列表顺序取候选。列表只有相对发布时间时按近似日期选择，完整信息回传后校准；没有日期的排后面。</p><p>自动空间清理默认关闭，只在用户设置开启。本人或全站空间不足时，优先清理本账号退出列表的音频，然后清理发布时间更早的音频；共享缓存的相关引用会一起清理，节目记录保留供手动重新生成。已有下载不会自动补抓；清理不减少已用流量，也不删除手机上的下载；RSS移出节目也不保证播放器删除收听历史。非0保留天数仍会按到期清理。</p><p>码率只影响新生成的音频，音轨保持视频默认。标题/简介优先使用YouTube已提供的设置语言，没有则保留原文。</p></details>';
+const policyHelp='<p class="muted">最新 N 条按本频道全部来源合并后的发布时间选取，不给每个作者固定分配名额；自动排序会将不同来源按发布时间从新到旧混排；也可手动选择其他排序。旧音频退出列表后保留缓存，增加 N 可以重新显示。</p><details class="preference-help"><summary>数量范围与空间清理规则</summary><p>候选数量和最新N支持1–100；最新N设0关闭限制。保留天数0–3650（0永久），同步间隔1–168小时，RSS集数1–1000。频道中的数字留空则跟随用户默认。</p><p>会至少检查每个来源的N条候选，再合并筛选；作者取YouTube最新列表，playlist按列表顺序取候选。列表只有相对发布时间时按近似日期选择，完整信息回传后校准；没有日期的排后面。</p><p>自动空间清理默认关闭，只在用户设置开启。本人或全站空间不足时，优先清理本账号退出列表的音频，然后清理发布时间更早的音频；共享缓存的相关引用会一起清理，节目记录保留供手动重新生成。已有下载不会自动补抓；清理不减少已用流量，也不删除手机上的下载；RSS移出节目也不保证播放器删除收听历史。非0保留天数仍会按到期清理。</p><p>新节目默认使用M4A：优先原始AAC，只封装和写章节；无AAC则按转码码率编码。原始AAC可能比64kbps MP3更大；选“节省空间”始终按指定码率编码AAC。转AAC时，48kbps使用24kHz单声道，64/96kbps使用48kHz单声道（适合语音），128kbps保留最多双声道；免转码保留原声道、采样率和音量。已有音频不自动重做，音轨语言不随文字语言改变。标题/简介优先使用YouTube已提供的设置语言，没有则保留原文。</p></details>';
 
 function renderSettings() {
   return `<form id="settings-form" class="settings-panel"><h2>用户默认偏好</h2><p>未单独覆盖的频道跟随这里的设置；已有频道的排序选择保留。</p><div class="settings-grid">${preferenceFields(data.settings)}</div>${policyHelp}<p class="muted">本月音频请求字节：${(data.transferBytes/1e6).toFixed(2)} MB / ${data.maxUserTransferBytes ? (data.maxUserTransferBytes/1e9)+' GB' : '不限'}。登录会话有效期为 7 天。YouTube cookies 仅在执行器机器保存，不属于网页用户设置。</p><p id="settings-error" class="error" role="alert"></p><button class="primary">保存默认设置</button></form>`;
@@ -206,6 +233,7 @@ function openChannelSettings(channel) {
   });
 }
 function openEpisodeDetails(episode) {
+  if(!episode){toast('节目已更新，请刷新列表');return;}
   const meta=JSON.parse(episode.metadata||'{}'),chapters=meta.chapters||[];
   const stamp=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
   openDialog(episode.title,`${meta.thumbnail?`<img class="episode-art" src="${escape(meta.thumbnail)}" alt="视频封面" referrerpolicy="no-referrer">`:''}<p>${escape(meta.author||'')}${episode.published_at?' · '+new Date(episode.published_at*1000).toLocaleDateString():''} · ${Math.floor(episode.duration/60)} 分钟</p><p><a href="https://www.youtube.com/watch?v=${episode.video_id}" target="_blank" rel="noopener noreferrer">打开原视频 ↗</a></p><div class="episode-notes">${escape(meta.description||'原视频简介尚未回传。已有音频不会仅为补简介而重新下载。')}</div><h3>章节</h3>${chapters.length?chapters.map(c=>`<button type="button" class="chapter-button" data-chapter-time="${c.startTime}" ${episode.object_key?'':'disabled'}>${stamp(c.startTime)} · ${escape(c.title)}</button>`).join(''):'<p>原视频未提供章节，或章节尚未回传。</p>'}`,'',()=>{});
@@ -258,12 +286,13 @@ function openSources(channel) {
   const sources = data.sources.filter((s) => s.channel_id === channel.id);
   openDialog(
     "管理频道来源",
-    `<p>支持单视频、playlist 或作者主页，每行一条。重复链接会自动跳过；同一用户已有的音频可直接复用。删除来源将停止后续扫描，已发现的单集和转换任务保留。</p>${sources.map((s) => `<div class="source-row"><span>${escape(s.url)}</span><button type="button" class="small-button danger" data-delete-source="${s.id}">删除来源</button></div>`).join("")}<label>添加来源<textarea name="urls" required placeholder="https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/@creator"></textarea></label>`,
+    `<p>支持单视频、playlist、作者主页或直播列表（/streams），每行一条。直播中、预告和处理中会等回放可用后再收录；按频道同步间隔检查，单集仍限3小时/90MB。重复链接会自动跳过；同一用户已有的音频可直接复用。删除来源将停止后续扫描，已发现的单集和转换任务保留。</p>${sources.map((s) => `<div class="source-row"><span>${s.url.endsWith('/streams')?'直播回放 · ':''}${escape(s.url)}${s.waiting_replay?'<small>等待直播回放可用，下次同步再检查</small>':''}</span>${s.kind==='author'&&s.url.endsWith('/videos')&&!sources.some(r=>r.url===s.url.replace(/\/videos$/,'/streams'))?`<button type="button" class="small-button" data-add-replays="${s.id}">订阅直播回放</button>`:''}<button type="button" class="small-button danger" data-delete-source="${s.id}">删除来源</button></div>`).join("")}<label>添加来源<textarea name="urls" required placeholder="https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/@creator&#10;https://www.youtube.com/@creator/streams"></textarea></label><label class="inline-choice"><input type="checkbox" name="include_replays" checked>添加作者时同时订阅直播回放</label><p class="muted">作者普通视频和直播回放各占1个来源；已有作者可点击“订阅直播回放”。直播回放沿用去重与频道最新N条规则。</p>`,
     "添加来源",
     async (form) => {
       const result = await api(`/api/channels/${channel.id}/sources`, {
         method: "POST",
         body: JSON.stringify({
+          include_replays: form.has("include_replays"),
           urls: form
             .get("urls")
             .split(/\r?\n/)
@@ -276,6 +305,16 @@ function openSources(channel) {
       );
     },
   );
+  for(const button of $('#dialog-fields').querySelectorAll('[data-add-replays]')) {
+    button.onclick=async()=>{
+      button.disabled=true;
+      try {
+        const source=sources.find(s=>s.id===button.dataset.addReplays);
+        await api(`/api/channels/${channel.id}/sources`,{method:'POST',body:JSON.stringify({urls:[source.url.replace(/\/videos$/,'/streams')]})});
+        $('#dialog').close();await refresh();openSources(data.channels.find(c=>c.id===channel.id));toast('已订阅直播回放，按频道同步间隔检查');
+      }catch(e){button.disabled=false;toast(e.message);}
+    };
+  }
   for (const button of $("#dialog-fields").querySelectorAll(
     "[data-delete-source]",
   )) {
@@ -301,7 +340,11 @@ function confirmAction(title, description, handler) {
 }
 $("#content").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
-  if (!button) return;
+  if (!button) {
+    const card=event.target.closest('[data-channel-id]');
+    if(card&&!event.target.closest('a,button,input,select,textarea,audio'))location.hash=`#channel/${card.dataset.channelId}`;
+    return;
+  }
   const action = button.dataset.action,
     cid = button.dataset.id,
     c = data?.channels.find((c) => c.id === cid);
@@ -393,9 +436,9 @@ $("#content").addEventListener("click", async (event) => {
       };
     }
     if (action === "channel-settings") openChannelSettings(c);
-    if (action === "episode-details") openEpisodeDetails(data.episodes.find(e=>e.id===cid));
+    if (action === "episode-details") openEpisodeDetails(detailData?.episodes.find(e=>e.id===cid)||data.episodes.find(e=>e.id===cid));
     if (action === "sort") {
-      openDialog("频道节目排序", `<p>自动排序：来源按加入先后分组；playlist 保留列表顺序，作者视频从早到晚，单视频按加入先后。重复视频归入最早添加且已发现它的来源。下载完成先后不影响顺序。</p><label>排序方式<select name="sort_mode">${Object.entries({inherit:'跟随用户默认',...sortNames}).map(([key,label])=>`<option value="${key}" ${key===(JSON.parse(c.settings||'{}').sort_mode||'inherit')?'selected':''}>${label}</option>`).join('')}</select></label><p>缺少发布日期的历史节目暂按作者列表顺序反排；统一按发布时间排序时，缺少日期的节目排在末尾。RSS 提供串行播放提示，播放器自身的排序设置可能覆盖它。</p>`, "保存排序", async f=>{
+      openDialog("频道节目排序", `<p>自动排序：开启最新N时，全部来源按发布时间从新到旧混排；关闭最新N时，按来源分组。显式选择“按来源分组”可始终分组：playlist 保留列表顺序，作者视频从早到晚，单视频按加入先后。重复视频归入最早添加且已发现它的来源。下载完成先后不影响顺序。</p><label>排序方式<select name="sort_mode">${Object.entries({inherit:'跟随用户默认',...sortNames}).map(([key,label])=>`<option value="${key}" ${key===(JSON.parse(c.settings||'{}').sort_mode||'inherit')?'selected':''}>${label}</option>`).join('')}</select></label><p>缺少发布日期的历史节目暂按作者列表顺序反排；统一按发布时间排序时，缺少日期的节目排在末尾。从新到旧混排的 RSS 提供最新优先提示，其他顺序提供串行提示；播放器自身的排序设置可能覆盖它。</p>`, "保存排序", async f=>{
         await api(`/api/channels/${cid}/sort`, {method:"POST",body:JSON.stringify({sort_mode:f.get("sort_mode")})});
         toast("排序已保存，播放器刷新订阅后生效");
       });
@@ -421,6 +464,7 @@ $("#content").addEventListener("click", async (event) => {
         `将删除「${c.title}」的全部来源、任务和音频。此操作无法撤销。`,
         async () => {
           await api(`/api/channels/${cid}`, { method: "DELETE" });
+          if(view==='channel'&&detailId===cid)location.hash='#channels';
           toast("频道已删除");
         },
       );
@@ -473,8 +517,9 @@ $("#content").addEventListener("click", async (event) => {
 document.querySelectorAll("[data-view]").forEach(
   (b) =>
     (b.onclick = async () => {
-      view = b.dataset.view;
-      render();
+      const hash=`#${b.dataset.view}`;
+      if(location.hash!==hash){location.hash=hash;return;}
+      readRoute();render();
       if(view==='admin'){try{await loadAdmin();}catch(e){toast(e.message);}}
       if(view==='executors'){try{executionData=await api('/api/execution-policy');render();}catch(e){toast(e.message);}}
     }),
@@ -543,4 +588,13 @@ setInterval(() => {
   )
     refresh();
 }, 60000);
+window.addEventListener('hashchange',async()=>{
+  readRoute();
+  if(!data)return;
+  render();window.scrollTo(0,0);await refresh();
+  if(view==='admin'&&data?.user.role==='admin'){try{await loadAdmin();}catch(e){toast(e.message);}}
+});
+readRoute();
 await refresh();
+
+if(view==='admin'&&data?.user.role==='admin'){try{await loadAdmin();}catch(e){toast(e.message);}}
