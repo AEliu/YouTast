@@ -217,7 +217,7 @@ node tests/channel_sort.mjs
 node tests/channel_detail.mjs
 ```
 
-测试脚本对本地数据有写入：`channel_detail.mjs`使用专用本地邀请值、注册临时用户、插入SQLite fixture，并清空本地 `login_limits`。不要把生产origin硬替换进去运行；建议独立本地状态/测试环境。`--keep`会在被忽略的结果文件保存临时测试凭证，测试完要清理。部分测试只删频道，测试用户可能保留。
+测试脚本对本地数据有写入：`channel_detail.mjs`使用专用本地邀请值、注册临时用户、插入SQLite fixture；后续已移除清空 `login_limits`，并支持配对的 `TEST_ORIGIN` / `TEST_PERSIST_TO`。不要把生产origin硬替换进去运行；建议独立本地状态/测试环境。`--keep`会在被忽略的结果文件保存临时测试凭证，测试完要清理。部分测试只删频道，测试用户可能保留。
 
 其他专项见 `tests/admin.mjs`、`invitations.mjs`、`execution_policy.mjs`、`latest_cleanup.mjs`、`audio_formats.mjs`、`live_replays.mjs`、`preferences_metadata.mjs`、`storage_recovery.mjs`及 `tests/executor_*.py`；各脚本对端口、邀请码、fixture的要求需先读文件，不能假设一条命令包含全部专项。
 
@@ -227,7 +227,7 @@ node tests/channel_detail.mjs
 
 ### 可从当前代码确认的问题
 
-1. **详情越界分页未纠正**：`src/channel-detail.js`允许有效但大于总数的offset，返回空列表；`public/channel-detail.js`会给出空态并把范围压为末条。删除节目后停留旧末页也可能触发。应夹到最后有效页或提供“返回第一页”，并区分“频道无节目”和“本页为空”。尚未修复；这是源码可确认的问题，不宣称已在生产复现。
+1. **详情越界分页（后续已修复，尚未部署）**：接口在同一批查询内取最后有效页，空列表 offset 归零；前端用 replaceState 同步地址。补充空页恢复入口，并修复音频删除受 GC 触发器变更计数影响而误报 409 的关联问题。独立本地 API 与浏览器回归通过；范围与复验步骤见 [PAGINATION-VERIFICATION.md](PAGINATION-VERIFICATION.md)。
 2. **全局列表仍截断**：声音资料库100条、全局任务80条，无完整分页；频道详情独立分页已解决单频道查看，但未解决全局浏览。这是现有产品限制。
 3. **文档陈旧描述（README 已修正）**：后续文档整理已修正 README 的预设数字、作者直播、默认排序与设置入口。被忽略的 DEPLOYMENT 历史段仍按原时间线保留，不能作为当前操作说明。
 4. **测试残留**：部分本地fixture注册测试用户，finally只删除频道；`--keep`失败也可能保留资源。不是生产用户丢失Bug，但会积累本地数据，后续应按生成的精确ID清理，不能批量删除真实账号。
@@ -283,7 +283,7 @@ npm run deploy
 建议后续顺序（不是新增授权或完成声明）：
 
 1. 保留现有未提交内容，核验git差异与生产版本，按功能整理提交；同步README中已过时的范围与入口说明。
-2. 修正详情越界页和删除后的空页体验；补针对该行为的最小API/UI检查，同时核验详情前进/后退与窄屏操作。
+2. 详情越界页和删除后空页已在后续修复并完成本地 API/UI 回归，含前进/后退、刷新与窄屏；发布后仍需对实际部署版本复验。
 3. 在实体iPhone/iPad确认M4A播放、原生章节、私人RSS和扫码订阅，记录系统/客户端版本与具体结果。
 4. 确认真实直播回放的长周期链路与缺失日期策略；继续遵守请求节奏，不为验收增加高频YouTube轮询。
 5. 单独澄清字幕/同步文本的目标客户端及可用呈现方式，再决定是否实施；不要直接承诺Apple客户端能力。

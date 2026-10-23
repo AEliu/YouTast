@@ -65,7 +65,20 @@ node tests/audio_formats.mjs
 node tests/live_replays.mjs
 ```
 
-`local-integration-invite-only` 是公开测试口令，仅限本地。`channel_detail.mjs` 会清空本地 `login_limits`；`--keep` 保存测试凭据且保留频道，只用于临时人工检查。部分脚本只清理频道，不删除测试账号；隔离测试环境可整体保留用于排查，不要对真实用户库批量清理。
+`local-integration-invite-only` 是公开测试口令，仅限本地。`channel_detail.mjs` 支持 `TEST_ORIGIN` 和 `TEST_PERSIST_TO`，必须同时指向同一独立测试环境；仅允许 `http://127.0.0.1:端口`，不再清空本地 `login_limits`。`--keep` 保存测试凭据且保留频道，只用于临时人工检查。部分脚本只清理频道，不删除测试账号；隔离测试环境可整体保留用于排查，不要对真实用户库批量清理。
+
+频道详情专项可使用独立状态目录，避免触碰 8787 预览数据：
+
+```powershell
+npx wrangler d1 migrations apply DB --local --persist-to .wrangler/channel-pagination-state
+npx wrangler dev --ip 127.0.0.1 --port 8793 --persist-to .wrangler/channel-pagination-state --var REGISTRATION_INVITE:local-integration-invite-only
+# 另一终端：
+$env:TEST_ORIGIN = 'http://127.0.0.1:8793'
+$env:TEST_PERSIST_TO = '.wrangler/channel-pagination-state'
+node tests/channel_detail.mjs
+```
+
+详情专项覆盖 32 条节目独立分页、越界及空列表、最新 N 缩减、旧缓存实际删除到退页/零条、转码中拒绝删除、任务数量缩减与权限边界。纯渲染空态与范围检查由 `npm test` 中的 `channel-detail.test.js` 执行。浏览器回归步骤和本轮结果见[分页验证记录](PAGINATION-VERIFICATION.md)。
 
 | 专项 | 环境与注意事项 |
 | --- | --- |

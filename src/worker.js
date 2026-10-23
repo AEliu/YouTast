@@ -679,7 +679,7 @@ async function api(request, env, url) {
     const removed = await env.DB.batch([
       stmt(
         env,
-        "UPDATE episodes SET object_key=NULL,size=0,expired_at=unixepoch(),cleanup_reason='manual' WHERE id=? AND NOT EXISTS(SELECT 1 FROM jobs WHERE episode_id=? AND status='running')",
+        "UPDATE episodes SET object_key=NULL,size=0,expired_at=unixepoch(),cleanup_reason='manual' WHERE id=? AND NOT EXISTS(SELECT 1 FROM jobs WHERE episode_id=? AND status='running') RETURNING id",
         e.id,
         e.id,
       ),
@@ -689,7 +689,9 @@ async function api(request, env, url) {
         e.id,
       ),
     ]);
-    requireValue(removed[0].meta.changes === 1, 409, "请等待转码完成");
+    // D1 changes also includes GC trigger writes; RETURNING identifies the
+    // episode update itself without mistaking a successful delete for a 409.
+    requireValue(removed[0].results.length === 1, 409, "请等待转码完成");
     await cleanupObjects(env, user.id);
     return json({ ok: true });
   }

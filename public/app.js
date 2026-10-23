@@ -98,6 +98,10 @@ async function refresh() {
       catch(e){if(e.status===401)throw e;detailData=null;detailError=e.message;}
     }
     if(route!==location.hash){refreshAgain=true;return;}
+    if(view==='channel'&&detailData&&detailOffset!==detailData.page.offset){
+      detailOffset=detailData.page.offset;
+      history.replaceState(history.state,'',`#channel/${detailId}/${detailTab}/${detailOffset}`);
+    }
     if(view==='executors')executionData=await api('/api/execution-policy');
     if(view==='admin'&&data.user.role!=='admin'){view='channels';adminData=null;}
     $("#initial").hidden = true;

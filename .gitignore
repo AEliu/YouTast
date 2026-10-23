@@ -43,3 +43,4 @@ Thumbs.db
 *.cookies
 .coverage
 htmlcov/
+.playwright-mcp/
