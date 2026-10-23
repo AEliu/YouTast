@@ -1,6 +1,6 @@
 # 频道详情分页修复验证
 
-日期：2026-10-23（Asia/Shanghai）。本轮仅本地验证，未发布 Worker、未应用生产迁移、未访问真实 YouTube。无新增迁移。
+日期：2026-10-23（Asia/Shanghai）。先完成本地验证，后续已发布 Worker 并通过生产契约复验（见末节）。未访问真实 YouTube，无新增迁移。
 
 ## 修复行为
 
@@ -35,3 +35,17 @@
 环境准备与变量见 [DEVELOPMENT.md](DEVELOPMENT.md)。先运行 `npm run check`、`npm test`，再对独立本地服务运行 `node tests/channel_detail.mjs`。需要界面 fixture 时加 `--keep`；该选项会保存本地测试凭据并保留资源，不适用于真实账号。
 
 浏览器用 32 条节目验证 `/episodes/999`、上一页、下一页、后退、前进、刷新。旧缓存准备 31 条，进入 `/archive/30` 后删除唯一一条，确认退到 0 且剩 30 条；再用仅一条的缓存验证删至空列表。人工测试资源按准确 ID 清理，或停止专用服务后处理本轮独立测试目录；不要清空其他用户库。
+
+## 生产发布与复验
+
+2026-10-23 发布源码提交 `14a1a24`（包含分页修复 `d73b9ef` 及独立 favicon 提交）。Cloudflare Version ID：`781c0c3f-8b37-49da-89f6-c604e43857ae`；发布前版本：`380430cc-818e-4805-a65e-a94afb366259`。应用版本仍为 `0.1.0`，本次未创建版本标签、未变更数据库迁移或重启执行器。
+
+- 发布前语法检查、16 项 JS 单元再次通过；`main` 已推送。
+- 线上 `app.js`、`channel-detail.js`、`favicon.ico` 与本地发布文件逐字节一致。
+- 临时管理员频道插入 32 条 SQL fixture，验证大 offset 返回 30、空分类归零、非法 offset 返回 400、匿名访问返回 401。
+- 用合成音频引用验证真实 DELETE/GC 契约：转码中返回 409，解除后返回 200；旧缓存 31→30→0，末页依次正确归位。合成引用没有对应 R2 音频，不作为播放验证。
+- 临时频道及 fixture 已删除，随后 GET 详情返回 404；中途因 Windows 子进程输出编码而中断的一次验证残留，也按精确频道 ID 清理并确认 404。
+- 独立读取现有私有 RSS，验证 1 条 enclosure、152,492 字节音频、HEAD、206 Range 与完整 FFmpeg 解码通过；没有重新请求 YouTube。
+- 执行器 ZIP SHA-256：`f81552e558d2793395fef5f3959297318f2d12da89a1330d2f589b442d01e44b`。打包文件仅含既定 7 项允许列表。
+
+原始结果在被忽略的 `test-results/pagination-production.json`、`test-results/pagination-deploy.txt` 和 `.wrangler/windows-executor/rss-result.json`。线上复验使用带应用 User-Agent 的请求；默认 Python User-Agent 曾被边缘返回 403，不应解释为分页接口失败。实体手机与真实 YouTube 长期行为不属于本次验证。
