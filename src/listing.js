@@ -1,0 +1,46 @@
+import {requireValue} from './lib.js';
+
+export function listOptions(url) {
+ const raw=url.searchParams.get('offset')||'0',offset=Number(raw);
+ requireValue(/^\d+$/.test(raw)&&Number.isSafeInteger(offset)&&offset<=1000000,400,'分页位置无效');
+ const query=(url.searchParams.get('q')||'').trim();
+ requireValue(query.length<=200,400,'搜索内容不能超过 200 个字符');
+ return {offset,limit:30,query};
+}
+
+// D1 binds JS numbers as real values; explicitly truncate page arithmetic.
+// The visible CTE and the total query are executed in one batch snapshot.
+export const pageSql=`LIMIT ? OFFSET CASE WHEN ? >= (SELECT COUNT(*) FROM visible) THEN MAX(0,CAST(((SELECT COUNT(*) FROM visible)-1)/? AS INTEGER))*? ELSE ? END`;
+export const pageBindings=({offset,limit})=>[limit,offset,limit,limit,offset];
+export function pageInfo({offset,limit},total) {
+ const current=total===0?0:offset>=total?Math.floor((total-1)/limit)*limit:offset;
+ return {offset:current,limit,total,hasMore:current+limit<total};
+}
+
+// instr treats %, _ and backslashes literally. Only constant SQL fragments
+// are generated here; every search value is a bound parameter.
+export function episodeSearch(query,alias='e') {
+ if(!query)return {sql:'1=1',values:[]};
+ const metadata=`CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata ELSE '{}' END`;
+ const fields=[`${alias}.title`,`${alias}.video_id`,`json_extract(${metadata},'$.author')`,`json_extract(${metadata},'$.description')`];
+ return {sql:'('+fields.map(f=>`instr(lower(COALESCE(${f},'')),lower(?))>0`).join(' OR ')+')',values:fields.map(()=>query)};
+}
+
+export async function userCollection(env,user,url,kind) {
+ const options=listOptions(url),{query}=options;
+ let base,values;
+ if(kind==='episodes'){
+  const search=episodeSearch(query);
+  base=`SELECT e.*,c.title channel_title,c.feed_token FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.user_id=? AND e.id IN(SELECT id FROM active_episode_window WHERE channel_id=c.id) AND ${search.sql}`;
+  values=[user.id,...search.values];
+ }else{
+  const search=query?"AND (instr(lower(COALESCE(e.title,'')),lower(?))>0 OR instr(lower(c.title),lower(?))>0)":'';
+  base=`SELECT j.id,j.kind,j.status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? ${search}`;
+  values=[user.id,user.id,...(query?[query,query]:[])];
+ }
+ const results=await env.DB.batch([
+  env.DB.prepare(`WITH visible AS(${base}) SELECT COUNT(*) total FROM visible`).bind(...values),
+  env.DB.prepare(`WITH visible AS(${base}) SELECT * FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${pageSql}`).bind(...values,...pageBindings(options)),
+ ]);
+ return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query};
+}

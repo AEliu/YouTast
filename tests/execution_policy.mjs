@@ -1,10 +1,8 @@
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {resolve} from 'node:path';
-const origin='http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
-async function sql(command){await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--persist-to','.wrangler/admin-state','--command',command],{windowsHide:true});}
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
+const accounts=[],sql=localDatabase(origin,process.env.TEST_PERSIST_TO||'.wrangler/admin-state');
 let cookie='',cid;const machines=[];
 async function api(path,data,{status=200,headers={}}={}) {
  const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...headers},body:data?JSON.stringify(data):undefined});
@@ -14,8 +12,8 @@ const auth=e=>({Authorization:'Bearer '+e.token,'X-Executor-Protocol':'2','X-Exe
 const claim=e=>api('/api/executor/claim',{}, {headers:auth(e)});
 const finish=(e,j)=>api(`/api/executor/jobs/${j.id}/scan`,{entries:[]},{headers:{...auth(e),'X-Lease-Token':j.leaseToken}});
 try {
- await sql('DELETE FROM login_limits');
  const user=await api('/api/auth/register',{username:'throttle_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});
+ accounts.push({id:user.user.id,username:'throttle_'+suffix});
  const defaults=await api('/api/execution-policy');assert.equal(defaults.concurrency,1);assert.equal(defaults.start_interval,60);assert.equal(defaults.request_interval,2);assert.equal(defaults.download_wait,10);
  const config={concurrency:1,start_interval:60,request_interval:2,download_wait:10,cooldown_seconds:60,paused:false};
  cid=(await api('/api/channels',{title:'Execution control fixture'},{status:201})).id;
@@ -49,7 +47,9 @@ try {
  await api('/api/execution-policy',config,{headers:{Origin:'https://evil.example'},status:403});
  console.log('PASS: defaults, atomic per-user multi-machine concurrency/start gap, pause/drain/resume, verification cooldown, bounds/Origin isolation and capability reporting');
 }finally{
+ try{
  for(const e of machines)try{await fetch(origin+'/api/executors/'+e.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});}catch{}
  if(cid)await fetch(origin+'/api/channels/'+cid,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
- await sql('DELETE FROM login_limits');
+
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }

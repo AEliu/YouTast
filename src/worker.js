@@ -1,5 +1,6 @@
 import {audioMedia} from './audio.js';
 import {channelDetail} from './channel-detail.js';
+import {userCollection} from './listing.js';
 import {adminApi} from "./admin.js";
 import {subscriptionPage} from './subscribe.js';
 import {seedLegacyInvite} from './invitations.js';
@@ -320,6 +321,7 @@ async function api(request, env, url) {
     }
   }
   if (path === "/api/me" && method === "GET") return json({ user });
+  if((path==='/api/episodes'||path==='/api/jobs')&&method==='GET')return json(await userCollection(env,user,url,path.slice(5)));
   if (path === "/api/dashboard" && method === "GET") {
     const result = await env.DB.batch([
       stmt(

@@ -1,8 +1,10 @@
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local-only regression. Real API/SQLite/R2; deliberately complete audio out of order.
 import assert from 'node:assert/strict';
 import {fastExecution} from './execution-fixture.mjs';
 import {randomBytes} from 'node:crypto';
-const origin='http://127.0.0.1:8787',suffix=randomBytes(5).toString('hex');
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8787',suffix=randomBytes(5).toString('hex');
+const accounts=[],sql=localDatabase(origin,process.env.TEST_PERSIST_TO);
 let cookie='',cid,e;
 async function api(path,data,options={}) {
   const r=await fetch(origin+path,{method:options.method||(data?'POST':'GET'),headers:{Origin:origin,'Content-Type':'application/json',Cookie:cookie,...options.headers},body:data?JSON.stringify(data):undefined});
@@ -23,6 +25,7 @@ const expected=indexes=>indexes.map(i=>entries[i].title);
 try {
  const r=await fetch(origin+'/api/auth/register',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({username:'sort_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'})});
  assert.ok(r.ok);cookie=r.headers.get('set-cookie').split(';')[0];
+ accounts.push({id:(await r.json()).user.id,username:'sort_'+suffix});
  await fastExecution(origin,cookie);
  cid=(await api('/api/channels',{title:'Local sorting '+suffix},{status:201})).id;
  e=await api('/api/executors',{name:'sorting-test'},{status:201});
@@ -72,6 +75,9 @@ try {
  assert.deepEqual(order(await feed()),expected([1,0,3,2,4,5]),'Deleting source preserves sort provenance');
  console.log('PASS: source defaults, inverted scan/upload completion, five channel sort modes, stable RSS GUIDs and deleted-source order');
 } finally {
+ try{
  if(e)await api(`/api/executors/${e.id}`,undefined,{method:'DELETE'});
  if(cid)await api(`/api/channels/${cid}`,undefined,{method:'DELETE'});
+
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }

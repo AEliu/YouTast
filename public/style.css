@@ -1065,3 +1065,8 @@ dialog .source-row button {
 }
 
 .app-shell[data-page-view="channel"] .page-heading { display:none; }
+
+.list-search { display:flex; align-items:flex-end; flex-wrap:wrap; gap:10px; margin:20px 0; }
+.list-search label { flex:1; min-width:160px; margin:0; }
+.list-search input { margin-bottom:0; }
+.list-search button { min-height:40px; }

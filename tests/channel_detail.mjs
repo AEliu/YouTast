@@ -1,24 +1,19 @@
 // Local-only detail pagination/privacy fixture. No YouTube or production writes.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {resolve} from 'node:path';
-import {mkdir,writeFile,unlink} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8787',suffix=randomBytes(4).toString('hex'),keep=process.argv.includes('--keep');
 assert.match(origin,/^http:\/\/127\.0\.0\.1:\d+$/,'Detail fixtures must only use a local test server');
-const state=process.env.TEST_PERSIST_TO?['--persist-to',process.env.TEST_PERSIST_TO]:[];
-let cookie='',a,b;const account={username:'detail_'+suffix,password:randomBytes(24).toString('hex')};
-async function sql(command){
- const file=resolve(`test-results/channel-detail-${suffix}.sql`);await writeFile(file,command);
- try{await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local',...state,'--file',file],{windowsHide:true});}
- finally{await unlink(file);}
-}
+let cookie='',a,b,passed=false;const accounts=[],account={username:'detail_'+suffix,password:randomBytes(24).toString('hex')};
+const sql=localDatabase(origin);
 async function api(path,data,status=200,auth=cookie){const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,Cookie:auth,'Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});assert.equal(r.status,status,`${path}: ${r.status}`);return {r,body:await r.json()};}
 const q=x=>"'"+String(x).replaceAll("'","''")+"'";
 try{
  await mkdir('test-results',{recursive:true});
  const user=await api('/api/auth/register',{...account,invite:'local-integration-invite-only'});cookie=user.r.headers.get('set-cookie').split(';')[0];
+ accounts.push({id:user.body.user.id,username:account.username});
+ if(process.env.TEST_FAIL_AFTER_REGISTER==='1')throw new Error('Intentional fixture cleanup verification');
  a=(await api('/api/channels',{title:'频道详情验证',description:'把节目、来源和处理进度放在一起。'},201)).body.id;
  b=(await api('/api/channels',{title:'Other channel'},201)).body.id;
  const rows=[];
@@ -47,11 +42,13 @@ try{
  await api(`/api/channels/${a}/detail?tab=invalid`,null,400);
  await api(`/api/channels/${a}/detail`,null,401,'');
  const stranger=await api('/api/auth/register',{username:'stranger_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});
+ accounts.push({id:stranger.body.user.id,username:'stranger_'+suffix});
  await api(`/api/channels/${a}/detail`,null,404,stranger.r.headers.get('set-cookie').split(';')[0]);
  await sql(`UPDATE episodes SET object_key=${q(user.body.user.id+'/fixture/old.mp3')},size=10 WHERE id=${q('detail_'+suffix+'_0')}`);
  const settings={title:'频道详情验证',description:'把节目、来源和处理进度放在一起。',settings:{latest_limit:2},rss_metadata:{author:'',image:'',language:'inherit',category:'Education',explicit:false}};
  await api(`/api/channels/${a}/settings`,settings);
  detail=(await api(`/api/channels/${a}/detail`)).body;assert.equal(detail.page.total,2);assert.equal(detail.counts.archived,1);
+ assert.equal((await api('/api/episodes')).body.page.total,122,'Global paging must respect each channel latest-N window');
  const smallerWindow=(await api(`/api/channels/${a}/detail?offset=30`)).body;assert.equal(smallerWindow.page.offset,0);assert.equal(smallerWindow.episodes.length,2);
  const archive=(await api(`/api/channels/${a}/detail?tab=archive`)).body;assert.equal(archive.episodes.length,1);assert.ok(archive.episodes[0].title.startsWith('第 01 集'));
  // A real delete on the only item of the archive's last page must fall back.
@@ -98,6 +95,10 @@ try{
  assert.deepEqual(emptyChannel.page,{offset:0,limit:30,total:0,hasMore:false});assert.equal(emptyChannel.episodes.length,0);
  if(keep)await writeFile('test-results/channel-detail-ui-user.json',JSON.stringify({...account,channel_id:a,other_channel_id:b}));
  console.log('PASS: channel-scoped pagination, out-of-range recovery, sort, latest window/archive separation, validation and access isolation');
+ passed=true;
 }finally{
- if(!keep)for(const cid of [a,b].filter(Boolean))await fetch(origin+'/api/channels/'+cid,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
+ if(!keep||!passed){
+  try{for(const cid of [a,b].filter(Boolean))await fetch(origin+'/api/channels/'+cid,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});}
+  finally{await cleanupLocalUsers({origin,sql,accounts});}
+ }
 }

@@ -1,4 +1,5 @@
 import {renderChannelDetail} from './channel-detail.js';
+import {renderCollection,listRoute,channelRoute} from './list-ui.js';
 import { readApiResponse } from "./api-response.js";
 import {renderAdmin,adminUserFields,limitBytes,invitationFields} from './admin-ui.js';
 import {subscriptionLinks,podcastClients} from './subscribe-links.js';
@@ -29,6 +30,10 @@ let data = null,
   detailId = "",
   detailTab = "episodes",
   detailOffset = 0,
+  listOffset = 0,
+  searchQuery = '',
+  collectionData = null,
+  collectionError = '',
   retryAt = 0,
   retryMessage = "";
 const sortNames = { source: "自动（最新合集按时间混排）", source_grouped: "按来源分组", published_asc: "发布时间：从早到晚", published_desc: "发布时间：从晚到早", added_asc: "加入顺序：先加入在前", added_desc: "加入顺序：后加入在前" };
@@ -80,10 +85,15 @@ function showAuth() {
   executionData = null;
 }
 function readRoute() {
-  const match=location.hash.match(/^#channel\/([\w-]+)(?:\/(episodes|sources|jobs|archive))?(?:\/(\d+))?$/);
+  const [hash,params='']=location.hash.split('?');
+  searchQuery=new URLSearchParams(params).get('q')||'';
+  const match=hash.match(/^#channel\/([\w-]+)(?:\/(episodes|sources|jobs|archive))?(?:\/(\d+))?$/);
+  const list=hash.match(/^#(episodes|jobs)(?:\/(\d+))?$/);
   detailData=null;detailError='';
+  collectionData=null;collectionError='';
   if(match){view='channel';detailId=match[1];detailTab=match[2]||'episodes';detailOffset=Number(match[3]||0);}
-  else {const name=location.hash.slice(1);view=Object.hasOwn(viewInfo,name)&&name!=='channel'?name:'channels';detailId='';}
+  else if(list){view=list[1];listOffset=Number(list[2]||0);detailId='';}
+  else {const name=hash.slice(1);view=Object.hasOwn(viewInfo,name)&&name!=='channel'?name:'channels';detailId='';searchQuery='';}
 }
 async function refresh() {
   if(Date.now()<retryAt)return;
@@ -94,13 +104,25 @@ async function refresh() {
     data = await api("/api/dashboard");
     if(route!==location.hash){refreshAgain=true;return;}
     if(view==='channel') {
-      try {detailData=await api(`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}`);detailError='';}
+      try {detailData=await api(`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}`);detailError='';}
       catch(e){if(e.status===401)throw e;detailData=null;detailError=e.message;}
     }
     if(route!==location.hash){refreshAgain=true;return;}
-    if(view==='channel'&&detailData&&detailOffset!==detailData.page.offset){
+    if(view==='channel'&&detailData&&(detailOffset!==detailData.page.offset||searchQuery!==detailData.query)){
       detailOffset=detailData.page.offset;
-      history.replaceState(history.state,'',`#channel/${detailId}/${detailTab}/${detailOffset}`);
+      searchQuery=detailData.query;
+      history.replaceState(history.state,'',channelRoute(detailId,detailTab,detailOffset,searchQuery));
+    }
+    if(view==='episodes'||view==='jobs'){
+      try{
+        const model=await api(`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}`);
+        if(route!==location.hash){refreshAgain=true;return;}
+        collectionData=model;collectionError='';
+        if(listOffset!==model.page.offset||searchQuery!==model.query){
+          listOffset=model.page.offset;searchQuery=model.query;
+          history.replaceState(history.state,'',listRoute(view,listOffset,searchQuery));
+        }
+      }catch(e){if(route!==location.hash){refreshAgain=true;return;}if(e.status===401)throw e;collectionData=null;collectionError=e.message;}
     }
     if(view==='executors')executionData=await api('/api/execution-policy');
     if(view==='admin'&&data.user.role!=='admin'){view='channels';adminData=null;}
@@ -144,19 +166,7 @@ function render() {
   if(view==='channel')content.innerHTML=detailData?renderChannelDetail(detailData,{escape,sortNames,statusNames}):`<a class="small-button" href="#channels">← 返回我的频道</a><div class="empty" role="status">${escape(detailError||'正在加载频道详情…')}</div>`;
   if (view === "channels")
     content.innerHTML = `<div class="section-bar"><strong>你的订阅频道 <small> / ${String(data.channels.length).padStart(2, "0")}</small></strong><small>只有你决定听什么</small></div><div class="grid">${data.channels.map((c, i) => `<article class="channel-card" data-channel-id="${c.id}"><a class="channel-link" href="#channel/${c.id}" aria-label="打开 ${escape(c.title)} 的频道详情"><div class="channel-art art-${i % 5}"><span class="art-tag">PRIVATE PODCAST</span><span class="art-symbol" aria-hidden="true">${["◉", "≋", "∿", "◎", "✳"][i % 5]}</span><span class="art-corner">YOUTAST ORIGINAL SPACE</span></div></a><div class="card-body"><h3><a class="channel-link" href="#channel/${c.id}">${escape(c.title)}</a></h3><p>${escape(c.description || "留给好内容的一方声音空间。")}</p><div class="card-meta"><span>${c.episode_count} 集声音${c.archived_count?` · ${c.archived_count} 集旧音频仍保留缓存`:""} · ${data.sources.filter((s) => s.channel_id === c.id).length} 个来源</span><span>私人频道 ↗</span></div><div class="card-actions"><button class="small-button" data-action="sources" data-id="${c.id}">＋ 来源</button><button class="small-button" data-action="rss" data-id="${c.id}">▦ 扫码订阅</button><button class="small-button" data-action="channel-settings" data-id="${c.id}">频道设置</button><button class="small-button" data-action="sort" data-id="${c.id}">排序</button><button class="small-button" data-action="sync" data-id="${c.id}">同步</button><button class="small-button danger" data-action="delete-channel" data-id="${c.id}">删除</button></div></div></article>`).join("")}<button class="add-card" data-action="new-channel"><span>＋</span><strong>开始一个新的声音频道</strong><small>视频 / Playlist / 创作者</small></button></div><div class="intro-strip"><div class="intro-icon">♫</div><div><strong>把你的频道，带到喜欢的 Podcast 播放器。</strong><p>添加 YouTube 来源 → 连接执行器 → 等待音频生成 → 使用私人 RSS 订阅。订阅链接是访问凭证，请妥善保管。</p></div></div>`;
-  if (view === "episodes")
-    content.innerHTML = `<div class="section-bar"><strong>最近 100 集</strong><small>删除音频可释放存储空间</small></div>${
-      data.episodes.length
-        ? `<div class="list">${data.episodes
-            .map((e) => {
-              const c = data.channels.find((c) => c.id === e.channel_id);
-              return `<article class="list-row"><div class="list-icon">♫</div><div class="list-details"><strong>${escape(e.title)}</strong><p>${escape(c?.title)} · ${Math.floor(e.duration / 60)} 分钟 · ${e.object_key ? `${(e.size / 1e6).toFixed(1)} MB` : (e.expired_at ? (e.cleanup_reason==="quota"?"空间不足已清理":e.cleanup_reason==="manual"?"已手动删除":"已按保留期清理") : "等待音频")}</p></div><button class="small-button" data-action="episode-details" data-id="${e.id}">简介 / 章节</button>${e.object_key ? `<audio controls preload="none" data-audio-id="${e.id}" src="/media/${c.feed_token}/${e.id}.${e.object_key.endsWith('.m4a')?'m4a':'mp3'}"></audio><button class="small-button danger" data-action="delete-episode" data-id="${e.id}">删除音频</button>` : (e.expired_at ? `<button class="small-button" data-action="regenerate" data-id="${e.id}">重新生成</button>` : '<span class="badge queued">待处理</span>')}</article>`;
-            })
-            .join("")}</div>`
-        : empty("还没有单集。为频道添加来源，并运行执行器，声音就会来到这里。")
-    }`;
-  if (view === "jobs")
-    content.innerHTML = `<div class="section-bar"><strong>最近 80 项任务</strong><small>租约 10 分钟 · 最多自动尝试 3 次</small></div>${data.jobs.length ? `<div class="list">${data.jobs.map((j) => `<article class="list-row"><div class="list-icon">${j.kind === "scan" ? "⌕" : "♫"}</div><div class="list-details"><strong>${escape(j.episode_title || j.channel_title)}</strong><p>${j.kind === "scan" ? "发现视频" : "转换音频"} · ${j.reused ? "已复用已有音频" : `已尝试 ${j.attempts} 次`}${j.error ? ` · ${escape(j.error)}` : ""}</p></div><span class="badge ${j.status}">${statusNames[j.status]}</span>${j.status === "failed" ? `<button class="small-button" data-action="retry" data-id="${j.id}">重试</button>` : ""}</article>`).join("")}</div>` : empty("暂无任务。添加频道来源后，执行器会领取扫描和转码任务。")}`;
+  if(view==='episodes'||view==='jobs')content.innerHTML=collectionData?renderCollection(collectionData,view,{escape,statusNames,channels:data.channels}):`<div class="empty" role="status">${escape(collectionError||'正在加载列表…')}</div>`;
   if (view === "settings") content.innerHTML = renderSettings();
   if (view === "executors")
     content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1||e.audio_control_version!==1||e.replay_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数、最新N、AAC音频及直播回放。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
@@ -169,6 +179,13 @@ async function loadAdmin(offset=adminData?.offset||0,search=adminData?.search||'
  adminData={overview,...list,search,invites:invites.invitations,inviteOffset:invites.offset,inviteHasMore:invites.hasMore};if(view==='admin')render();
 }
 $('#content').addEventListener('submit',async event=>{
+  if(event.target.matches('[data-list-search]')){
+    event.preventDefault();
+    const query=String(new FormData(event.target).get('q')||'').trim();
+    const hash=view==='channel'?channelRoute(detailId,detailTab,0,query):listRoute(view,0,query);
+    if(location.hash!==hash)location.hash=hash;else await refresh();
+    return;
+  }
  if(event.target.id==='execution-policy-form') {
   event.preventDefault();const form=new FormData(event.target),button=event.submitter;
   if(button)button.disabled=true;
@@ -353,6 +370,10 @@ $("#content").addEventListener("click", async (event) => {
     cid = button.dataset.id,
     c = data?.channels.find((c) => c.id === cid);
   try {
+    if(action==='clear-search'){
+      location.hash=view==='channel'?channelRoute(detailId,detailTab):listRoute(view);
+      return;
+    }
     if(action==='execution-resume') {await api('/api/execution-policy/resume',{method:'POST'});await refresh();toast('已恢复领取，将遵守启动间隔');return;}
     if(action==='admin-invite-create'||action==='admin-invite-edit') {
       const invite=action==='admin-invite-edit'?adminData.invites.find(i=>i.id===cid):null;
@@ -440,7 +461,7 @@ $("#content").addEventListener("click", async (event) => {
       };
     }
     if (action === "channel-settings") openChannelSettings(c);
-    if (action === "episode-details") openEpisodeDetails(detailData?.episodes.find(e=>e.id===cid)||data.episodes.find(e=>e.id===cid));
+    if (action === "episode-details") openEpisodeDetails(detailData?.episodes.find(e=>e.id===cid)||collectionData?.episodes?.find(e=>e.id===cid)||data.episodes.find(e=>e.id===cid));
     if (action === "sort") {
       openDialog("频道节目排序", `<p>自动排序：开启最新N时，全部来源按发布时间从新到旧混排；关闭最新N时，按来源分组。显式选择“按来源分组”可始终分组：playlist 保留列表顺序，作者视频从早到晚，单视频按加入先后。重复视频归入最早添加且已发现它的来源。下载完成先后不影响顺序。</p><label>排序方式<select name="sort_mode">${Object.entries({inherit:'跟随用户默认',...sortNames}).map(([key,label])=>`<option value="${key}" ${key===(JSON.parse(c.settings||'{}').sort_mode||'inherit')?'selected':''}>${label}</option>`).join('')}</select></label><p>缺少发布日期的历史节目暂按作者列表顺序反排；统一按发布时间排序时，缺少日期的节目排在末尾。从新到旧混排的 RSS 提供最新优先提示，其他顺序提供串行提示；播放器自身的排序设置可能覆盖它。</p>`, "保存排序", async f=>{
         await api(`/api/channels/${cid}/sort`, {method:"POST",body:JSON.stringify({sort_mode:f.get("sort_mode")})});
@@ -576,6 +597,7 @@ $("#logout").onclick = async () => {
 document.addEventListener("visibilitychange", () => {
   if (
     !document.hidden &&
+    !document.activeElement?.closest('[data-list-search]') &&
     !["settings","admin","executors"].includes(view) &&
     data &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)

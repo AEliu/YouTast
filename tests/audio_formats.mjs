@@ -1,7 +1,9 @@
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local API/SQLite/R2 contract for mixed feeds and format-aware reuse; no YouTube.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-const origin='http://127.0.0.1:8787',suffix=randomBytes(4).toString('hex');
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8787',suffix=randomBytes(4).toString('hex');
+const accounts=[],sql=localDatabase(origin,process.env.TEST_PERSIST_TO);
 let cookie='',machine;const channels=[];
 async function api(path,data,headers={},status=200){
  const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,Cookie:cookie,'Content-Type':'application/json',...headers},body:data?JSON.stringify(data):undefined});
@@ -15,6 +17,7 @@ async function discover(id){const j=await claim(false);assert.equal(j.kind,'scan
 async function upload(j,mime,status=200){const r=await fetch(origin+`/api/executor/jobs/${j.id}/audio`,{method:'POST',headers:{...auth(),'X-Lease-Token':j.leaseToken,'Content-Type':mime,'X-Audio-Duration':'2'},body:Buffer.from('offline audio fixture bytes')});assert.equal(r.status,status);}
 try{
  let r=await api('/api/auth/register',{username:'formats_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});cookie=r.r.headers.get('set-cookie').split(';')[0];
+ accounts.push({id:r.body.user.id,username:'formats_'+suffix});
  assert.equal((await api('/api/settings')).body.settings.audio_mode,'source');
  await api('/api/execution-policy',{concurrency:3,start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
  machine=(await api('/api/executors',{name:'formats'},{},201)).body;
@@ -38,6 +41,9 @@ try{
  assert.equal((await api('/api/executor/status',{},auth())).body.audioControlVersion,0,'Legacy claim accurately reports old capability');
  console.log('PASS: default AAC, old-executor gate, MIME validation, source/compact cache isolation, source reuse, mixed MP3/M4A RSS, HEAD and Range');
 }finally{
+ try{
  if(machine)await fetch(origin+'/api/executors/'+machine.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
  for(const c of channels)await fetch(origin+'/api/channels/'+c,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
+
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }

@@ -1,12 +1,10 @@
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Isolated local API and real local D1/R2 only. No YouTube requests.
 import assert from 'node:assert/strict';
 import {fastExecution} from './execution-fixture.mjs';
 import {randomBytes} from 'node:crypto';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {resolve} from 'node:path';
-const origin='http://127.0.0.1:8787',suffix=randomBytes(5).toString('hex');
-const sql=command=>promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--command',command],{windowsHide:true});
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8787',suffix=randomBytes(5).toString('hex');
+const accounts=[],sql=localDatabase(origin,process.env.TEST_PERSIST_TO);
 const channels=[];let cookie='',machine;
 async function api(path,data,options={}) {
  const r=await fetch(origin+path,{method:options.method||(data?'POST':'GET'),headers:{Origin:origin,'Content-Type':'application/json',Cookie:cookie,...options.headers},body:data?JSON.stringify(data):undefined});
@@ -26,6 +24,7 @@ async function finish(job) {
 async function discover(){const job=await claim();assert.equal(job.kind,'scan');await api(`/api/executor/jobs/${job.id}/scan`,{entries:[entry]},{headers:headers(job)});return job;}
 try {
  const r=await fetch(origin+'/api/auth/register',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({username:'preferences_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'})});assert.ok(r.ok);cookie=r.headers.get('set-cookie').split(';')[0];
+ accounts.push({id:(await r.json()).user.id,username:'preferences_'+suffix});
  await fastExecution(origin,cookie);
  let settings=(await api('/api/settings')).settings;assert.equal(settings.retention_days,0);assert.equal(settings.bitrate,64);
  await api('/api/settings',{settings:{...settings,scan_limit:999}},{status:400});
@@ -87,6 +86,9 @@ try {
  assert.equal((await api('/api/dashboard')).episodes.filter(e=>e.channel_id===many).length,100);
  console.log('PASS: settings inheritance, channel RSS metadata, chapters/private access, encoding-aware reuse, executor capability gate and shared-reference retention');
 } finally {
+ try{
  if(machine)await api(`/api/executors/${machine.id}`,undefined,{method:'DELETE'});
  for(const cid of channels)await api(`/api/channels/${cid}`,undefined,{method:'DELETE'});
+
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }

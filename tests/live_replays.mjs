@@ -1,12 +1,10 @@
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 // Local-only source lifecycle: empty live scans must reappear via cron, not fail.
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {resolve} from 'node:path';
-const origin='http://127.0.0.1:8787',suffix=randomBytes(4).toString('hex');
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8787',suffix=randomBytes(4).toString('hex');
+const accounts=[],sql=localDatabase(origin,process.env.TEST_PERSIST_TO);
 let cookie='',machine,cid;
-async function sql(command){await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--command',command],{windowsHide:true});}
 async function api(path,data,headers={},status=200){
  const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,Cookie:cookie,'Content-Type':'application/json',...headers},body:data?JSON.stringify(data):undefined});
  assert.equal(r.status,status,`${path}: ${r.status}`);return {r,body:await r.json()};
@@ -18,6 +16,7 @@ const dash=async()=>(await api('/api/dashboard')).body;
 const entry={video_id:'replay00001',title:'Processed live replay',duration:20,published_at:1700000000,metadata:{text_language:'zh-CN',complete:true}};
 try{
  const registered=await api('/api/auth/register',{username:'replays_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});cookie=registered.r.headers.get('set-cookie').split(';')[0];
+ accounts.push({id:registered.body.user.id,username:'replays_'+suffix});
  await api('/api/execution-policy',{concurrency:3,start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
  cid=(await api('/api/channels',{title:'Live lifecycle'},{},201)).body.id;
  machine=(await api('/api/executors',{name:'replay fixture'},{},201)).body;
@@ -50,6 +49,9 @@ try{
  await api(`/api/channels/${cid}/sources`,{urls:['https://www.youtube.com/@bad'],include_replays:'true'},{},400);
  console.log('PASS: live waiting survives cron and repeated pending states, old-client gate, finite replay conversion, source expansion/canonical dedup, cross-source cache reuse, single RSS item');
 }finally{
+ try{
  if(machine)await fetch(origin+'/api/executors/'+machine.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
  if(cid)await fetch(origin+'/api/channels/'+cid,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
+
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }
