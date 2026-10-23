@@ -8,15 +8,18 @@ import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = resolve(root, "node_modules/wrangler/bin/wrangler.js");
-const origin = "http://127.0.0.1:8787";
+const origin = process.env.TEST_ORIGIN || "http://127.0.0.1:8787";
+const database=localDatabase(origin),accounts=[];
+const testIp=`2001:db8:${randomBytes(2).toString('hex')}:${randomBytes(2).toString('hex')}::1`;
 const exec = promisify(execFile);
 const quote = (value) => "'" + String(value).replaceAll("'", "''") + "'";
 let cookie = "";
 async function command(args) {
-  return exec(process.execPath, [cli, ...args], {
+  return exec(process.execPath, [cli, ...args,...(process.env.TEST_PERSIST_TO?['--persist-to',process.env.TEST_PERSIST_TO]:[])], {
     cwd: root,
     timeout: 30000,
     env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
@@ -30,6 +33,7 @@ async function request(path, data, method) {
     method: method || (data ? "POST" : "GET"),
     headers: {
       Origin: origin,
+      'CF-Connecting-IP':testIp,
       Cookie: cookie,
       "Content-Type": "application/json",
     },
@@ -77,6 +81,7 @@ try {
   cookie = response.headers.get("set-cookie").split(";")[0];
   await fastExecution(origin,cookie);
   const user = (await response.json()).user;
+  accounts.push(user);
   const payload = Buffer.from("ID3 durable cleanup test");
   const source = join(temp, "source.mp3"),
     output = join(temp, "download.mp3");
@@ -169,10 +174,12 @@ try {
     "PASS: orphan objects count toward quota, scheduled cleanup deletes them, and active leases protect uploads",
   );
 } finally {
+  try {
   if (executor)
     await request(`/api/executors/${executor.id}`, undefined, "DELETE");
   if (channelId)
     await request(`/api/channels/${channelId}`, undefined, "DELETE");
+  } finally {await cleanupLocalUsers({origin,sql:database,accounts});}
   if (!temp.startsWith(results + sep))
     throw new Error("Unexpected test cleanup target");
   await rm(temp, { recursive: true, force: true });

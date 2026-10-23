@@ -51,4 +51,8 @@ node scripts/recover-account.mjs --remote --username admin --confirm-reset admin
 
 复验：准备专用8794服务后设置 `TEST_ORIGIN` / `TEST_PERSIST_TO`，执行 `npm run test:passwords`；`npm run test:recovery` 自行创建并删除独立本地状态，无需运行服务。原始UI截图在被忽略的 `test-results/password-settings-mobile.png`。
 
-生产版本与仅临时账号的复验结果将在实际发布完成后追加。本地验证不代表已独立完成安全审计或扩大到邮箱/2FA恢复。
+生产已部署 `b91c8543-65cc-4bb6-b440-469707f2c5ea`（源码 `d807ba4`）。临时普通账号完成自助改密、管理员重新验证后重置、旧密码/会话失效、新密码登录、普通用户权限和审计脱敏验证；临时频道/账号已独立SQL确认零残留。真实管理员密码未修改。现有私人RSS的HEAD、206 Range与完整解码独立复验通过。
+
+操作员CLI随后修复远程SQL文件导入的确认及输出差异：明确传 --yes，写入不依赖导入进度文本作为JSON，而以独立只读查询确认状态。一次性本地恢复演练和生产临时普通账号恢复均通过，临时账号精确清理确认。远程文件导入可能短暂影响D1服务，应安排在低流量时操作；不能把CLI的零退出码单独当作恢复成功。
+
+原始记录在被忽略的 `test-results/password-production.json`、`operator-contract-production.json`；首次清理输出解析失败的原始记录另行保留，独立查询确认清理后才记录通过。本轮验证不代表独立安全审计，也不包含邮箱/2FA恢复。

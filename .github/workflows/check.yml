@@ -34,3 +34,5 @@ jobs:
           npm test
       - name: Offline executor tests with real FFmpeg
         run: python -m unittest discover -s tests -p 'executor_*.py'
+      - name: Read-only health contract
+        run: npm run test:health

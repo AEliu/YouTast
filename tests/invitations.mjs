@@ -5,23 +5,27 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {resolve} from 'node:path';
-const origin='http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
-const root=JSON.parse(await readFile('test-results/admin-ui-user.json','utf8'));
-async function sql(command){const r=await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--persist-to','.wrangler/admin-state','--command',command],{windowsHide:true});return r.stdout;}
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
+const state=process.env.TEST_PERSIST_TO||'.wrangler/admin-state',database=localDatabase(origin,state),accounts=[];
+let requestNumber=0;
+const localIp=()=>`2001:db8:${suffix.slice(0,4)}:${suffix.slice(4)}::${(++requestNumber).toString(16)}`;
+const root=JSON.parse(await readFile(process.env.TEST_ADMIN_FIXTURE||'test-results/admin-ui-user.json','utf8'));
+async function sql(command){return JSON.stringify(await database(command));}
 async function request(path,{data,cookie=root.cookie,status=200,headers={}}={}) {
- const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...headers},body:data?JSON.stringify(data):undefined});
+ const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':localIp(),...(cookie?{Cookie:cookie}:{}),...headers},body:data?JSON.stringify(data):undefined});
  assert.equal(r.status,status,`${path}: ${r.status}`);return {r,body:await r.json()};
 }
 const api=async(path,data,options={})=>(await request(path,{data,...options})).body;
 const fresh=()=>({label:'Invite test '+suffix,max_uses:1,expires_at:null});
 let serial=0,legacy,originalLegacy;
-async function register(code,extra={},status=200){return request('/api/auth/register',{cookie:null,data:{username:'invite_'+suffix+'_'+(++serial),password:randomBytes(20).toString('hex'),invite:code,...extra},status});}
+async function register(code,extra={},status=200){const result=await request('/api/auth/register',{cookie:null,data:{username:'invite_'+suffix+'_'+(++serial),password:randomBytes(20).toString('hex'),invite:code,...extra},status});if(status===200)accounts.push(result.body.user);return result;}
 try {
- await sql('DELETE FROM login_limits;');
  const login=await request('/api/auth/login',{cookie:null,data:{username:root.username,password:root.password}});root.cookie=login.r.headers.get('set-cookie').split(';')[0];
  let list=await api('/api/admin/invitations');legacy=list.invitations.find(i=>i.legacy);assert.ok(legacy);originalLegacy={label:legacy.label,max_uses:legacy.max_uses,expires_at:legacy.expires_at,enabled:!!legacy.enabled};
  const code=await api('/api/admin/invitations',{...fresh(),max_uses:2});assert.match(code.code,/^YT-[a-f0-9]{32}$/);
- const outputs=await Promise.all(Array.from({length:6},()=>fetch(origin+'/api/auth/register',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({username:'race_'+suffix+'_'+(++serial),password:randomBytes(20).toString('hex'),invite:code.code,role:'admin'})})));
+ const outputs=await Promise.all(Array.from({length:6},()=>fetch(origin+'/api/auth/register',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':localIp()},body:JSON.stringify({username:'race_'+suffix+'_'+(++serial),password:randomBytes(20).toString('hex'),invite:code.code,role:'admin'})})));
+ for(const response of outputs)if(response.status===200)accounts.push((await response.clone().json()).user);
  assert.deepEqual(outputs.map(r=>r.status).sort(),[200,200,403,403,403,403]);
  list=await api('/api/admin/invitations');let item=list.invitations.find(i=>i.id===code.id);assert.equal(item.used_count,2);assert.equal(item.max_uses,2);
  assert.ok(!JSON.stringify(list).includes('code_hash'));assert.ok(!JSON.stringify(list).includes(code.code));
@@ -32,7 +36,6 @@ try {
  const duplicate=await api('/api/admin/invitations',fresh());await register(duplicate.code,{username:root.username},409);
  item=(await api('/api/admin/invitations')).invitations.find(i=>i.id===duplicate.id);assert.equal(item.used_count,0,'Failed username insert must roll back consumption');
  await register(duplicate.code,{password:'short'},400);item=(await api('/api/admin/invitations')).invitations.find(i=>i.id===duplicate.id);assert.equal(item.used_count,0);
- await sql('DELETE FROM login_limits;');
  const disabled=await api('/api/admin/invitations',fresh());await api('/api/admin/invitations/'+disabled.id,{...fresh(),enabled:false});await register(disabled.code,{},403);
  await api('/api/admin/invitations/'+disabled.id,{...fresh(),enabled:true});const ordinary=await register(disabled.code);
  const ordinaryCookie=ordinary.r.headers.get('set-cookie').split(';')[0];await api('/api/admin/invitations',undefined,{cookie:ordinaryCookie,status:403});await api('/api/admin/invitations',fresh(),{cookie:ordinaryCookie,status:403});
@@ -47,6 +50,6 @@ try {
  await writeFile('test-results/invitation-ui-fixture.json',JSON.stringify({id:code.id,label:'Invite test '+suffix}));
  console.log('PASS: atomic invitation redemption, failed registration rollback, caps/top-up/unlimited, expiration/disable, legacy import, ordinary-user/Origin isolation, hash-only storage and redacted audit');
 }finally{
- if(legacy&&originalLegacy)await api('/api/admin/invitations/'+legacy.id,originalLegacy);
- await sql('DELETE FROM login_limits;');
+ try{if(legacy&&originalLegacy)await api('/api/admin/invitations/'+legacy.id,originalLegacy);}
+ finally{await cleanupLocalUsers({origin,sql:database,accounts});}
 }

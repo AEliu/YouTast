@@ -5,8 +5,10 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve } from "node:path";
-const origin = "http://127.0.0.1:8787",
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
+const origin = process.env.TEST_ORIGIN || "http://127.0.0.1:8787",
   suffix = randomBytes(5).toString("hex");
+const sql=localDatabase(origin),accounts=[];
 const channels = [],
   executors = [];
 async function api(
@@ -18,6 +20,7 @@ async function api(
     method,
     headers: {
       Origin: origin,
+      'CF-Connecting-IP':`2001:db8:${suffix.slice(0,4)}:${suffix.slice(4,8)}::1`,
       "Content-Type": "application/json",
       ...(owner ? { Cookie: owner.cookie } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -30,13 +33,14 @@ async function api(
   return { response: r, body: await r.json() };
 }
 async function user(label) {
-  const { response } = await api(null, "/api/auth/register", {
+  const { response,body } = await api(null, "/api/auth/register", {
     data: {
       username: `${label}_${suffix}`,
       password: randomBytes(32).toString("hex"),
       invite: "local-integration-invite-only",
     },
   });
+  accounts.push(body.user);
   const cookie=response.headers.get("set-cookie").split(";")[0];
   await fastExecution(origin,cookie);
   return { cookie };
@@ -216,6 +220,7 @@ try {
       "get",
       `youtast-audio/${sharedKey}`,
       "--local",
+      ...(process.env.TEST_PERSIST_TO?['--persist-to',process.env.TEST_PERSIST_TO]:[]),
       "--file",
       resolve("test-results/reuse-deleted-audio.mp3"),
     ],
@@ -275,4 +280,5 @@ try {
     }).catch(() => {});
   for (const owner of [alice, bob].filter(Boolean))
     await api(owner, "/api/auth/logout", { data: {} }).catch(() => {});
+  await cleanupLocalUsers({origin,sql,accounts});
 }

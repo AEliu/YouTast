@@ -8,23 +8,33 @@ import {secret,passwordHash} from '../src/lib.js';
 
 class RecoveryError extends Error {}
 const args=process.argv.slice(2),options={};
-for(let i=0;i<args.length;i++){
+function parseOptions(){
+ if(args.includes('--help')){console.log('Usage: node scripts/recover-account.mjs (--local [--persist-to DIR] | --remote) --username NAME --confirm-reset NAME [--output .secrets/FILE.json] [--resume]');process.exit(0);}
+ for(let i=0;i<args.length;i++){
  const key=args[i];
  if(['--local','--remote','--resume'].includes(key)){if(options[key])throw new RecoveryError('Duplicate option');options[key]=true;}
  else if(['--username','--confirm-reset','--output','--persist-to'].includes(key)){if(options[key]||!args[i+1]||args[i+1].startsWith('--'))throw new RecoveryError('Invalid option value');options[key]=args[++i];}
  else throw new RecoveryError('Unknown recovery option');
+ }
 }
 let temporary;
-async function sql(command){
- await mkdir('.wrangler/account-recovery',{recursive:true});
- const file=resolve(`.wrangler/account-recovery/${randomUUID()}.sql`);temporary=file;
- await writeFile(file,command);
+async function sql(command,read=false){
+ const scope=[options['--local']?'--local':'--remote',...(options['--persist-to']?['--persist-to',options['--persist-to']]:[])];
+ let file;
+ if(!read){
+  await mkdir('.wrangler/account-recovery',{recursive:true});
+  file=resolve(`.wrangler/account-recovery/${randomUUID()}.sql`);temporary=file;
+  await writeFile(file,command);
+ }
  try{
-  const {stdout}=await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB',options['--local']?'--local':'--remote',...(options['--persist-to']?['--persist-to',options['--persist-to']]:[]),'--file',file,'--json'],{windowsHide:true,env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
-  return JSON.parse(stdout);
- }finally{await unlink(file);temporary=undefined;}
+  const {stdout}=await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB',...scope,...(read?['--command',command]:['--file',file]),'--json','--yes'],{windowsHide:true,env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
+  // Remote --file uses the import API and returns progress text. Only a
+  // separate read-only --command query is used as confirmation evidence.
+  return read?JSON.parse(stdout):undefined;
+ }finally{if(file){await unlink(file);temporary=undefined;}}
 }
 async function main(){
+ parseOptions();
  if(Boolean(options['--local'])===Boolean(options['--remote']))throw new RecoveryError('Choose exactly one of --local or --remote');
  const username=options['--username'];
  if(!/^[a-z0-9_-]{3,40}$/.test(username||'')||options['--confirm-reset']!==username)throw new RecoveryError('Provide a lowercase username and matching --confirm-reset username');
@@ -32,7 +42,7 @@ async function main(){
  await mkdir('.secrets',{recursive:true});
  const output=resolve(options['--output']||`.secrets/recovery-${username}.json`);
  if(await realpath(dirname(output))!==await realpath('.secrets')||!basename(output).endsWith('.json'))throw new RecoveryError('Recovery output must be a JSON file directly inside .secrets');
- const rows=await sql(`SELECT id,username,salt,password_hash,role,disabled FROM users WHERE username='${username}'`);
+ const rows=await sql(`SELECT id,username,salt,password_hash,role,disabled FROM users WHERE username='${username}'`,true);
  const user=rows[0].results[0];if(!user)throw new RecoveryError('Account not found');
  if(!/^[a-f0-9-]{36}$/.test(user.id)||!/^[a-f0-9]{64}$/.test(user.salt)||!/^[a-f0-9]{64}$/.test(user.password_hash))throw new RecoveryError('Account credential format needs manual inspection');
  let plan;
@@ -52,11 +62,11 @@ async function main(){
  // validated above. The commit guard also protects resumptions and races.
  const applied=`EXISTS(SELECT 1 FROM users WHERE id='${user.id}' AND salt='${salt}' AND password_hash='${encoded}')`;
  const change=alreadyApplied?'':`UPDATE users SET salt='${salt}',password_hash='${encoded}' WHERE id='${user.id}' AND salt='${plan.previousSalt}' AND password_hash='${plan.previousHash}';`;
- const result=await sql(`${change}
+ await sql(`${change}
  DELETE FROM sessions WHERE user_id='${user.id}' AND ${applied};
- INSERT OR IGNORE INTO admin_audit(id,actor_id,target_id,action,details,created_at) SELECT '${plan.auditId}',NULL,'${user.id}','user.password.recovery','{"method":"operator"}',unixepoch() WHERE ${applied};
- SELECT id,role,disabled FROM users WHERE id='${user.id}' AND salt='${salt}' AND password_hash='${encoded}';`);
- const confirmed=result.at(-1).results[0];if(!confirmed)throw new RecoveryError('Credentials changed concurrently; recovery was not confirmed');
+ INSERT OR IGNORE INTO admin_audit(id,actor_id,target_id,action,details,created_at) SELECT '${plan.auditId}',NULL,'${user.id}','user.password.recovery','{"method":"operator"}',unixepoch() WHERE ${applied};`);
+ const result=await sql(`SELECT id,salt,password_hash,role,disabled FROM users WHERE id='${user.id}'`,true);
+ const confirmed=result[0].results[0];if(!confirmed||confirmed.salt!==salt||confirmed.password_hash!==encoded)throw new RecoveryError('Credentials changed concurrently; recovery was not confirmed');
  if(confirmed.role!==user.role||confirmed.disabled!==user.disabled)throw new RecoveryError('Account state changed concurrently; inspect locally before completing recovery');
  const completed={...plan,state:'complete',completedAt:new Date().toISOString()};delete completed.previousSalt;delete completed.previousHash;
  const finalized=output+'.complete-'+randomUUID();

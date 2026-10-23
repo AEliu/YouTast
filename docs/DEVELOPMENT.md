@@ -107,3 +107,11 @@ npm run test:recovery
 ```
 
 passwords专项按本轮身份清理普通账号，保留一个按状态目录区分的本地fixture管理员；恢复专项自行创建唯一一次性本地D1目录并在结束时删除，无需服务，不使用生产资源。Node单元中的旧密码登录竞态用例会暂停真实密码派生后的请求来验证会话保护。交互、边界与复验结果见[账号安全说明](ACCOUNT-SECURITY.md)。
+
+## 运维工具与旧专项验证
+
+`npm run test:health` 为6项离线HTTP测试；`npm run test:backup` 自行创建唯一一次性D1/R2环境，应用15个迁移并演练恢复、损坏拒绝和目录清理，不需要启动服务，不访问生产。后者要求本机已有wrangler.jsonc（可复制示例），默认CI仅运行健康专项。使用与备份一致性边界见[运维说明](OPERATIONS.md)。
+
+admin、invitations、latest_cleanup、job_recovery、sources_reuse、storage_recovery、quota现在支持配对 `TEST_ORIGIN` / `TEST_PERSIST_TO`，只允许127.0.0.1。前三者还支持 `TEST_ADMIN_FIXTURE` 指定同一个私密fixture文件；admin先运行，保留一个管理员供后续脚本使用。使用新状态时，服务应配置本地专用REGISTRATION_INVITE；job_recovery另用TEST_INVITE指定相同口令。quota必须使用全站/用户上限均为50字节的独立状态，不能混用admin环境。
+
+2026-10-23复验：独立8796服务/ops-test-state运行admin、invitations、latest_cleanup、job_recovery、sources_reuse、storage_recovery，独立8797/50字节状态运行quota均通过；账号按精确身份清理，admin还原原始配置。首次admin配置还原因数字布尔值返回400已修复为规范布尔值，首次遗留的两名普通测试账号也已按ID+用户名清理确认。管理员fixture有意保留，测试服务结束后停止。未迁移Python真实上游/多进程脚本的账号清理，不应把这些结果扩写成整个测试目录均无残留。

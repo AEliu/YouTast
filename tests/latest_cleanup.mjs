@@ -6,12 +6,14 @@ import {promisify} from 'node:util';
 import {resolve} from 'node:path';
 import {readFile} from 'node:fs/promises';
 import {fastExecution} from './execution-fixture.mjs';
-const origin='http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
-const admin=JSON.parse(await readFile('test-results/admin-ui-user.json','utf8'));
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
+const origin=process.env.TEST_ORIGIN||'http://127.0.0.1:8791',suffix=randomBytes(4).toString('hex');
+const state=process.env.TEST_PERSIST_TO||'.wrangler/admin-state',sql=localDatabase(origin,state),accounts=[];
+const testIp=`2001:db8:${suffix.slice(0,4)}:${suffix.slice(4)}::1`;
+const admin=JSON.parse(await readFile(process.env.TEST_ADMIN_FIXTURE||'test-results/admin-ui-user.json','utf8'));
 let cookie='',adminCookie='',uid;const channels=[],machines=[];
-async function sql(command){await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--persist-to','.wrangler/admin-state','--command',command],{windowsHide:true});}
 async function api(path,data,{status=200,headers={},asAdmin=false}={}) {
- const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json',Cookie:asAdmin?adminCookie:cookie,...headers},body:data?JSON.stringify(data):undefined});
+ const r=await fetch(origin+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json','CF-Connecting-IP':testIp,Cookie:asAdmin?adminCookie:cookie,...headers},body:data?JSON.stringify(data):undefined});
  assert.equal(r.status,status,`${path}: ${r.status}`);const body=await r.json();return {body,r};
 }
 const json=async(...args)=>(await api(...args)).body;
@@ -27,9 +29,9 @@ async function channel(title,settings={}) {
 }
 async function settingsFor(c,settings){await json(`/api/channels/${c}/settings`,{title:'Collection '+c,description:'',settings,rss_metadata:{author:'',image:'',language:'inherit',category:'Education',explicit:false}});}
 try {
- await sql('DELETE FROM login_limits');
  let login=await api('/api/auth/login',{username:admin.username,password:admin.password});adminCookie=login.r.headers.get('set-cookie').split(';')[0];
  const reg=await api('/api/auth/register',{username:'collection_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});cookie=reg.r.headers.get('set-cookie').split(';')[0];uid=reg.body.user.id;
+ accounts.push({id:uid,username:reg.body.user.username});
  await fastExecution(origin,cookie);machine=await json('/api/executors',{name:'offline collection'},{status:201});machines.push(machine);
  const defaults=(await json('/api/settings')).settings;
  await json('/api/settings',{settings:{...defaults,scan_limit:7,retention_days:13,sync_hours:3,feed_limit:17}});
@@ -65,15 +67,15 @@ try {
  await sql("DELETE FROM storage_cleanup_locks WHERE token='test-held-lock'");
  await upload(next);
  d=await json('/api/dashboard');assert.equal(d.bytes,48);p=d.channels.find(c=>c.id===primary);assert.equal(p.episode_count,2);
- const saved=await promisify(execFile)(process.execPath,[resolve('node_modules/wrangler/bin/wrangler.js'),'d1','execute','DB','--local','--persist-to','.wrangler/admin-state','--json','--command',`SELECT e.object_key,e.cleanup_reason FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.user_id='${uid}' AND e.video_id='oldvideo001'`],{windowsHide:true});
- const records=JSON.parse(saved.stdout.slice(saved.stdout.indexOf('[')))[0].results;assert.equal(records.length,2);assert.ok(records.every(e=>e.object_key===null&&e.cleanup_reason==='quota'),'All same-owner references to the evicted object are cleared');
+ const records=(await sql(`SELECT e.object_key,e.cleanup_reason FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.user_id='${uid}' AND e.video_id='oldvideo001'`))[0].results;assert.equal(records.length,2);assert.ok(records.every(e=>e.object_key===null&&e.cleanup_reason==='quota'),'All same-owner references to the evicted object are cleared');
  assert.equal(await claim(),null,'Quota evictions must not automatically redownload');
  await settingsFor(primary,{latest_limit:3,scan_limit:7,sort_mode:'source'});assert.equal(await claim(),null,'Expanding latest N reuses retained old audio');
  assert.equal((await json('/api/dashboard')).channels.find(c=>c.id===primary).episode_count,3);
  console.log('PASS: custom numeric values, merged global latest N, inactive-source exclusion, scan barrier, RSS/archive separation, no automatic redownload, opt-in physical quota cleanup, shared-reference deletion, lock and oversize protection');
 }finally{
+ try{
  await sql("DELETE FROM storage_cleanup_locks WHERE token='test-held-lock'");
  for(const e of machines)await fetch(origin+'/api/executors/'+e.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
  for(const c of channels)await fetch(origin+'/api/channels/'+c,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});
- await sql('DELETE FROM login_limits');
+ }finally{await cleanupLocalUsers({origin,sql,accounts});}
 }

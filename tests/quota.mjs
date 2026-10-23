@@ -1,8 +1,11 @@
 import test from "node:test";
 import {fastExecution} from './execution-fixture.mjs';
 import assert from "node:assert/strict";
+import {localDatabase,cleanupLocalUsers} from './local-fixture.mjs';
 const origin = process.env.TEST_ORIGIN || "http://127.0.0.1:8788";
-test("Concurrent uploads cannot overbook the 50-byte isolated test quota", async () => {
+test("Concurrent uploads cannot overbook the 50-byte isolated test quota", async (t) => {
+  const sql=localDatabase(origin,process.env.TEST_PERSIST_TO||'.wrangler/quota-state'),accounts=[];
+  t.after(()=>cleanupLocalUsers({origin,sql,accounts}));
   let cookie = "";
   async function req(path, data, extra = {}) {
     const response = await fetch(origin + path, {
@@ -24,6 +27,7 @@ test("Concurrent uploads cannot overbook the 50-byte isolated test quota", async
     invite: "local-integration-invite-only",
   });
   assert.equal(r.status, 200);
+  accounts.push((await r.clone().json()).user);
   cookie = r.headers.get("set-cookie").split(";")[0];
   await fastExecution(origin,cookie);
   r = await req("/api/channels", { title: "Quota test" });
