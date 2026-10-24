@@ -40,4 +40,14 @@ $env:TEST_PERSIST_TO='.wrangler/source-controls-state'
 npm run test:sources
 ```
 
-生产发布结果待实际完成后补记；本轮未承诺实体手机、真实大型来源或长期负载验收。
+本轮未承诺实体手机、真实大型来源或长期负载验收。
+
+## 生产发布
+
+2026-10-24：功能提交 `5b29b7a` 已合并推送main；迁移0017已应用，Worker `22cbb9f6-a04d-4f78-9871-61c3727b7908`，[功能提交CI](https://github.com/AEliu/YouTast/actions/runs/40072580084)通过。发布前已保存私密D1快照；现有执行器具备window/discovery能力，无需重启。
+
+临时普通账号通过真实API写入7段有效的1秒合成MP3：A2+B3得到5条RSS、2条缓存，扩大范围复用缓存且空间不增加，频道总上限、单来源同步、暂停撤销扫描租约与恢复均通过。未请求YouTube。临时频道删除后音频回收完成，账号及待回收记录均独立查询确认零残留。
+
+线上app.js、dialog-ui.js、channel-detail.js、style.css与本地发布文件逐字节一致；既有私人RSS独立读取1条152492字节，HEAD/206 Range/FFmpeg完整解码通过。执行器健康快照正常，五项能力齐全、activeJobs=0、心跳82秒。
+
+原始脱敏记录保存在被忽略的test-results/source-controls-production-*.json、source-controls-assets.json、source-controls-health.json和source-controls-ui.json；浏览器fixture账号已按ID+用户名清理，测试服务交付时停止。
