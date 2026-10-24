@@ -809,6 +809,13 @@ dialog .source-row span {
 dialog .source-row button {
   flex-shrink: 0;
 }
+.source-actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
+dialog .source-row small { display:block; color:var(--muted); margin-top:5px; }
+.source-url { overflow-wrap:anywhere; }
+@media(max-width:560px) {
+  dialog .source-row { align-items:flex-start; flex-direction:column; }
+  .source-actions { justify-content:flex-start; width:100%; }
+}
 #toast {
   position: fixed;
   bottom: 24px;

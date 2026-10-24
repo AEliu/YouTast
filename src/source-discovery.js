@@ -1,4 +1,5 @@
 import {requireValue} from './lib.js';
+import {sourceMembership} from './source-controls.js';
 
 export const PLAYLIST_INVENTORY_LIMIT=10000;
 export function validateInventory(items){
@@ -15,6 +16,7 @@ export async function inventoryBatch(env,job,lease,items,limit,t){
  const snapshot=JSON.stringify(items),prepare=(sql,...values)=>env.DB.prepare(sql).bind(...values);
  const eligible=`FROM json_each(?) item JOIN source_discoveries d ON d.source_id=? AND d.video_id=json_extract(item.value,'$.id') WHERE d.pending=1`;
  const result=await env.DB.batch([
+  sourceMembership(env,job,lease,items,t),
   prepare(`INSERT INTO source_discoveries(source_id,video_id,pending)
    SELECT s.id,json_extract(item.value,'$.id'),CASE WHEN s.discovery_initialized=1 OR CAST(item.key AS INTEGER)<? THEN 1 ELSE 0 END
    FROM json_each(?) item JOIN sources s ON s.id=? AND s.kind='playlist' WHERE ${live}

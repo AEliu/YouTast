@@ -9,6 +9,7 @@ import {executionPolicy,validateExecution} from './execution.js';
 import {reconcileWindow} from './episode-window.js';
 import {makeSpace,cleanupOverQuota} from './storage-policy.js';
 import {scanRecords} from './scan-records.js';
+import {validateSourceControls,sourceMembership,backfillSourceMembership} from './source-controls.js';
 import {validateInventory,inventoryBatch,acknowledgeInventory} from './source-discovery.js';
 import {
   now,
@@ -218,7 +219,7 @@ function cookie(request, token, age) {
   return `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
 
-async function schedule(env, owner = null) {
+async function schedule(env, owner = null, sourceId = null) {
   const t = now();
   await env.DB.batch([
     stmt(env, `UPDATE episodes SET object_key=NULL,size=0,expired_at=?,cleanup_reason='retention' WHERE id IN (
@@ -236,13 +237,15 @@ async function schedule(env, owner = null) {
     ),
     stmt(
       env,
-      `INSERT OR IGNORE INTO jobs(id,user_id,channel_id,source_id,kind,available_at,created_at,updated_at) SELECT lower(hex(randomblob(16))),c.user_id,s.channel_id,s.id,'scan',?,?,? FROM sources s JOIN channels c ON c.id=s.channel_id JOIN users u ON u.id=c.user_id WHERE u.disabled=0 AND s.next_scan<=? AND (? IS NULL OR c.user_id=?) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.source_id=s.id AND j.status IN ('queued','running')) ORDER BY s.next_scan,s.id LIMIT 20`,
+      `INSERT OR IGNORE INTO jobs(id,user_id,channel_id,source_id,kind,available_at,created_at,updated_at) SELECT lower(hex(randomblob(16))),c.user_id,s.channel_id,s.id,'scan',?,?,? FROM sources s JOIN channels c ON c.id=s.channel_id JOIN users u ON u.id=c.user_id WHERE u.disabled=0 AND s.paused=0 AND s.next_scan<=? AND (? IS NULL OR c.user_id=?) AND (? IS NULL OR s.id=?) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.source_id=s.id AND j.status IN ('queued','running')) ORDER BY s.next_scan,s.id LIMIT 20`,
       t,
       t,
       t,
       t,
       owner,
       owner,
+      sourceId,
+      sourceId,
     ),
     stmt(env, "DELETE FROM sessions WHERE expires_at<?", t),
     stmt(env, "DELETE FROM login_limits WHERE reset_at<?", t),
@@ -421,9 +424,9 @@ async function api(request, env, url) {
     return json({ id: cid }, 201);
   }
   const sourceRoute = path.match(
-    /^\/api\/channels\/([\w-]+)\/sources\/([\w-]+)$/,
+    /^\/api\/channels\/([\w-]+)\/sources\/([\w-]+)(?:\/(sync))?$/,
   );
-  if (sourceRoute && method === "DELETE") {
+  if (sourceRoute && !sourceRoute[3] && method === "DELETE") {
     const channel = await ownedChannel(env, user, sourceRoute[1]);
     // Cascading scan deletion revokes its lease. Existing episodes/transcodes stay.
     const removed = await stmt(
@@ -433,7 +436,25 @@ async function api(request, env, url) {
       channel.id,
     ).first();
     requireValue(removed, 404, "来源不存在");
+    await reconcileWindow(env,channel.id);
     return json({ ok: true });
+  }
+  if(sourceRoute&&method==='POST'){
+    const channel=await ownedChannel(env,user,sourceRoute[1]);
+    const source=await stmt(env,'SELECT * FROM sources WHERE id=? AND channel_id=?',sourceRoute[2],channel.id).first();
+    requireValue(source,404,'来源不存在');
+    if(sourceRoute[3]==='sync'){
+      requireValue(!source.paused,409,'请先恢复来源，再立即同步');
+      await stmt(env,'UPDATE sources SET next_scan=? WHERE id=?',now(),source.id).run();
+      await schedule(env,user.id,source.id);return json({ok:true});
+    }
+    const controls=validateSourceControls(await body(request));
+    const statements=[backfillSourceMembership(env,source.id),stmt(env,'UPDATE sources SET latest_limit=COALESCE(?,latest_limit),paused=COALESCE(?,paused) WHERE id=?',controls.latest_limit??null,Object.hasOwn(controls,'paused')?(controls.paused?1:0):null,source.id)];
+    if(controls.paused===true)statements.push(stmt(env,"UPDATE jobs SET status='failed',error='来源已暂停',lease_token=NULL,lease_until=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE source_id=? AND kind='scan' AND status IN('queued','running')",now(),source.id));
+    if(controls.paused===false)statements.push(stmt(env,'UPDATE sources SET next_scan=? WHERE id=?',now(),source.id));
+    await env.DB.batch(statements);await reconcileWindow(env,channel.id);
+    if(controls.paused===false)await schedule(env,user.id,source.id);
+    return json({ok:true,source:await stmt(env,'SELECT * FROM sources WHERE id=?',source.id).first()});
   }
   const channelRoute = path.match(
     /^\/api\/channels\/([\w-]+)(?:\/(sources|rotate|sync|sort|settings|detail))?$/,
@@ -545,6 +566,8 @@ async function api(request, env, url) {
               channel.text_language,
             ),
           );
+          statements.push(stmt(env,`INSERT OR IGNORE INTO episode_sources(source_id,episode_id,discovered_at,position)
+            SELECT s.id,e.id,?,1 FROM sources s JOIN episodes e ON e.channel_id=s.channel_id AND e.video_id=? WHERE s.channel_id=? AND s.url=?`,now(),videoId,channel.id,s.url));
           statements.push(
             stmt(
               env,
@@ -772,6 +795,8 @@ async function executorApi(request, env, url) {
         WHERE candidate.user_id=? AND candidate.status='queued' AND candidate.available_at<=?
         AND ((policy.latest_limit=0 AND policy.scan_limit IN(10,30,50,100)) OR ?=1)
         AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources replay WHERE replay.id=candidate.source_id AND (replay.waiting_replay=1 OR replay.url LIKE '%/streams')))
+        AND (candidate.kind!='scan' OR NOT EXISTS(SELECT 1 FROM sources disabled WHERE disabled.id=candidate.source_id AND disabled.paused=1))
+        AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources limited WHERE limited.id=candidate.source_id AND limited.latest_limit>0))
         AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources discovery WHERE discovery.id=candidate.source_id AND discovery.kind='playlist'))
         AND (candidate.kind='scan' OR target.object_key IS NOT NULL OR policy.audio_mode='mp3' OR ?=1)
         AND (candidate.kind='scan' OR EXISTS(SELECT 1 FROM active_episode_window w WHERE w.id=candidate.episode_id))
@@ -791,6 +816,7 @@ async function executorApi(request, env, url) {
       t,
       request.headers.get('x-executor-content-control')==='1'?1:0,
       request.headers.get('x-executor-replay-control')==='1'?1:0,
+      request.headers.get('x-executor-content-control')==='1'?1:0,
       request.headers.get('x-executor-discovery-control')==='1'?1:0,
       request.headers.get('x-executor-audio-control')==='1'?1:0,
       request.headers.get("x-executor-protocol") === "2" ? 1 : 0,
@@ -804,7 +830,7 @@ async function executorApi(request, env, url) {
     const source = job.source_id
       ? await stmt(
           env,
-        "SELECT url,kind FROM sources WHERE id=?",
+        "SELECT url,kind,latest_limit FROM sources WHERE id=?",
           job.source_id,
         ).first()
       : null;
@@ -816,6 +842,7 @@ async function executorApi(request, env, url) {
         ).first()
       : null;
     const preferences = await stmt(env,"SELECT bitrate,audio_mode,text_language,MAX(scan_limit,latest_limit) scan_limit,latest_limit,sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first();
+    if(source){preferences.latest_limit=Math.max(preferences.latest_limit,source.latest_limit);preferences.scan_limit=Math.max(preferences.scan_limit,source.latest_limit);}
     const [,bitrate]=job.encoding_profile.split(":");
     return json({
       job: { id: job.id, kind: job.kind, leaseToken: token, source, episode, options:{...preferences,bitrate:Number(bitrate),encoding_profile:job.encoding_profile,metadata_only:Boolean(episode?.metadata_only),execution:policy} },
@@ -894,7 +921,7 @@ async function executorApi(request, env, url) {
     const source=await stmt(env,'SELECT kind FROM sources WHERE id=?',job.source_id).first();
     requireValue(source?.kind==='playlist',409,'仅播放列表使用完整清单比对');
     const b=await body(request,768000);validateInventory(b.items);
-    const preferences=await stmt(env,'SELECT MAX(scan_limit,latest_limit) scan_limit FROM channel_preferences WHERE id=?',job.channel_id).first();
+    const preferences=await stmt(env,'SELECT MAX(p.scan_limit,p.latest_limit,s.latest_limit) scan_limit FROM channel_preferences p JOIN sources s ON s.channel_id=p.id WHERE p.id=? AND s.id=?',job.channel_id,job.source_id).first();
     return json(await inventoryBatch(env,job,lease,b.items,preferences.scan_limit,t));
   }
   if (m[2] === "scan") {
@@ -928,7 +955,7 @@ async function executorApi(request, env, url) {
     const source=await stmt(env,'SELECT kind FROM sources WHERE id=?',job.source_id).first();
     const inventory=source?.kind==='playlist';
     if(inventory)requireValue(request.headers.get('x-executor-discovery-control')==='1',409,'播放列表需要升级执行器后完整比对');
-    const statements = [scanRecords(env,job,lease,entries,t)];
+    const statements = [scanRecords(env,job,lease,entries,t),sourceMembership(env,job,lease,entries,t)];
     if(inventory)statements.push(acknowledgeInventory(env,job,lease,entries,t));
     if(request.headers.get('x-executor-protocol')==='2') statements.push(stmt(env, `UPDATE jobs SET status='queued',reused=1,attempts=0,error=NULL,available_at=?,updated_at=?
       WHERE channel_id=? AND kind='transcode' AND status='done' AND EXISTS(SELECT 1 FROM episodes e

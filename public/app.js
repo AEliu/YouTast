@@ -1,3 +1,4 @@
+import {installDialogDismiss} from './dialog-ui.js';
 import {renderChannelDetail} from './channel-detail.js';
 import {renderCollection,listRoute,channelRoute} from './list-ui.js';
 import { readApiResponse } from "./api-response.js";
@@ -18,6 +19,7 @@ const $ = (s) => document.querySelector(s),
           "'": "&#39;",
         })[c],
     );
+const dialogDismiss=installDialogDismiss($('#dialog'),$('.dialog-close'));
 let data = null,
   executionData = null,
   adminData = null,
@@ -281,28 +283,33 @@ function openEpisodeDetails(episode) {
   };
 }
 function openDialog(title, fields, submit, handler) {
+  if($("#dialog").open&&!dialogDismiss.canLeave())return false;
   $("#dialog-title").textContent = title;
   $("#dialog-fields").innerHTML = fields;
   $("#dialog-error").textContent = "";
   $("#dialog-submit").textContent = submit;
   $("#dialog-submit").hidden = !submit;
   $("#dialog-submit").disabled = false;
+  const dialogGeneration=dialogDismiss.reset();
   $("#dialog-form").onsubmit = async (event) => {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
+    dialogDismiss.setBusy(true);
     $("#dialog-submit").disabled = true;
     try {
       const after=await handler(values);
+      if(dialogGeneration!==dialogDismiss.generation)return;
       $("#dialog").close();
       await refresh();
       if(typeof after==='function')after();
     } catch (e) {
-      $("#dialog-error").textContent = e.message;
+      if(dialogGeneration===dialogDismiss.generation)$("#dialog-error").textContent = e.message;
     } finally {
-      $("#dialog-submit").disabled = false;
+      if(dialogGeneration===dialogDismiss.generation){$("#dialog-submit").disabled = false;dialogDismiss.setBusy(false);}
     }
   };
   $("#dialog").showModal();
+  return true;
 }
 function newChannel() {
   openDialog(
@@ -320,9 +327,9 @@ function newChannel() {
 }
 function openSources(channel) {
   const sources = data.sources.filter((s) => s.channel_id === channel.id);
-  openDialog(
+  const opened=openDialog(
     "管理频道来源",
-    `<p>支持单视频、playlist、作者主页或直播列表（/streams），每行一条。直播中、预告和处理中会等回放可用后再收录；按频道同步间隔检查，单集仍限3小时/90MB。作者按候选数扫描最近投稿；播放列表完整检测新增，首次有限收录，后续分批收录开头、中间或末尾新增的视频。重复链接会自动跳过；同一用户已有的音频可直接复用。删除来源将停止后续扫描，已发现的单集和转换任务保留。</p>${sources.map((s) => `<div class="source-row"><span>${s.url.endsWith('/streams')?'直播回放 · ':''}${escape(s.url)}${s.waiting_replay?'<small>等待直播回放可用，下次同步再检查</small>':''}</span>${s.kind==='author'&&s.url.endsWith('/videos')&&!sources.some(r=>r.url===s.url.replace(/\/videos$/,'/streams'))?`<button type="button" class="small-button" data-add-replays="${s.id}">订阅直播回放</button>`:''}<button type="button" class="small-button danger" data-delete-source="${s.id}">删除来源</button></div>`).join("")}<label>添加来源<textarea name="urls" required placeholder="https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/@creator&#10;https://www.youtube.com/@creator/streams"></textarea></label><label class="inline-choice"><input type="checkbox" name="include_replays" checked>添加作者时同时订阅直播回放</label><p class="muted">作者普通视频和直播回放各占1个来源；已有作者可点击“订阅直播回放”。直播回放沿用去重与频道最新N条规则。</p>`,
+    `<p>支持单视频、playlist、作者主页或直播列表（/streams），每行一条。直播中、预告和处理中会等回放可用后再收录；按频道同步间隔检查，单集仍限3小时/90MB。作者按候选数扫描最近投稿；播放列表完整检测新增，首次有限收录，后续分批收录开头、中间或末尾新增的视频。重复链接会自动跳过；同一用户已有的音频可直接复用。删除来源将停止后续扫描，已发现的单集和转换任务保留。</p>${sources.map((s) => `<div class="source-row"><span>${s.url.endsWith('/streams')?'直播回放 · ':''}${escape(s.url)}${s.waiting_replay?'<small>等待直播回放可用，下次同步再检查</small>':''}<small>${s.latest_limit?`此来源最新 ${s.latest_limit} 条`:'此来源不单独限量'} · ${s.paused?'已暂停发现':'自动发现中'}</small></span><div class="source-actions"><button type="button" class="small-button" data-source-settings="${s.id}">设置</button><button type="button" class="small-button" data-source-sync="${s.id}" ${s.paused?'disabled':''}>同步</button>${s.kind==='author'&&s.url.endsWith('/videos')&&!sources.some(r=>r.url===s.url.replace(/\/videos$/,'/streams'))?`<button type="button" class="small-button" data-add-replays="${s.id}">订阅直播回放</button>`:''}<button type="button" class="small-button danger" data-delete-source="${s.id}">删除来源</button></div></div>`).join("")}<label>添加来源<textarea name="urls" required placeholder="https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/@creator&#10;https://www.youtube.com/@creator/streams"></textarea></label><label class="inline-choice"><input type="checkbox" name="include_replays" checked>添加作者时同时订阅直播回放</label><p class="muted">作者普通视频和直播回放各占1个来源；已有作者可点击“订阅直播回放”。直播回放沿用去重与频道最新N条规则。</p>`,
     "添加来源",
     async (form) => {
       const result = await api(`/api/channels/${channel.id}/sources`, {
@@ -341,8 +348,16 @@ function openSources(channel) {
       );
     },
   );
+  if(!opened)return;
+  for(const button of $('#dialog-fields').querySelectorAll('[data-source-settings]'))button.onclick=()=>openSourceSettings(channel,sources.find(source=>source.id===button.dataset.sourceSettings));
+  for(const button of $('#dialog-fields').querySelectorAll('[data-source-sync]'))button.onclick=async()=>{
+    button.disabled=true;
+    try{await api(`/api/channels/${channel.id}/sources/${button.dataset.sourceSync}/sync`,{method:'POST',body:'{}'});toast('已为这个来源安排同步');}
+    catch(e){toast(e.message);}finally{button.disabled=false;}
+  };
   for(const button of $('#dialog-fields').querySelectorAll('[data-add-replays]')) {
     button.onclick=async()=>{
+      if(!dialogDismiss.canLeave())return;
       button.disabled=true;
       try {
         const source=sources.find(s=>s.id===button.dataset.addReplays);
@@ -355,11 +370,12 @@ function openSources(channel) {
     "[data-delete-source]",
   )) {
     button.onclick = () => {
+      if(!dialogDismiss.canLeave())return;
         const source = sources.find((s) => s.id === button.dataset.deleteSource);
       $("#dialog").close();
       confirmAction(
         "删除来源",
-          `停止「${source.url}」的后续扫描，取消它的扫描任务。已发现的单集和转换任务保留，已下载音频仍可通过 RSS 收听。`,
+          `停止「${source.url}」的后续扫描，取消它的扫描任务。已发现节目和音频保留。删除会解除该来源的数量限制，旧节目按频道规则展示和转换；只想停止更新并保留数量规则时，请使用暂停。`,
         async () => {
           await api(
             `/api/channels/${channel.id}/sources/${button.dataset.deleteSource}`,
@@ -370,6 +386,13 @@ function openSources(channel) {
       );
     };
   }
+}
+function openSourceSettings(channel,source){
+  openDialog('来源设置',`<p class="source-url">${escape(source.url)}</p><label>此来源始终展示最新几条<input name="latest_limit" type="number" min="0" max="100" step="1" value="${source.latest_limit||''}" placeholder="留空或0：不单独限制"></label><p>例如作者A取2条、作者B取3条。范围缩小时，旧音频只进入缓存；扩大范围时优先复用缓存。频道总量限制仍会在合并后生效${channel.latest_limit?`（当前频道最新 ${channel.latest_limit} 条）`:'（当前频道未限制总量）'}。</p><p>最新范围从已发现候选中选择；没有发布日期时按发现时间及来源位置判断。首次扫描范围外的历史不会自动补齐。</p><label class="inline-choice"><input name="paused" type="checkbox" ${source.paused?'checked':''}>暂停这个来源的自动发现</label><p>暂停会取消该来源当前扫描，保留已有节目、音频及数量规则。</p>`,'保存来源设置',async form=>{
+    const raw=String(form.get('latest_limit')||'').trim();
+    await api(`/api/channels/${channel.id}/sources/${source.id}`,{method:'POST',body:JSON.stringify({latest_limit:raw===''?0:Number(raw),paused:form.has('paused')})});
+    toast('来源设置已保存');return ()=>openSources(data.channels.find(c=>c.id===channel.id));
+  });
 }
 function confirmAction(title, description, handler) {
   openDialog(title, `<p>${escape(description)}</p>`, "确认", handler);
@@ -437,6 +460,8 @@ $("#content").addEventListener("click", async (event) => {
     }
     if(action==='admin-prev'||action==='admin-next'){await loadAdmin(adminData.offset+(action==='admin-next'?100:-100));return;}
     if (action === "new-channel") newChannel();
+    if(action==='source-settings')openSourceSettings(c,detailData.sources.find(s=>s.id===button.dataset.sourceId));
+    if(action==='source-sync'){button.disabled=true;try{await api(`/api/channels/${cid}/sources/${button.dataset.sourceId}/sync`,{method:'POST',body:'{}'});toast('已为这个来源安排同步');await refresh();}finally{button.disabled=false;}}
     if (action === "sources") openSources(c);
     if (action === "rss") {
       let preferred='choose';
@@ -574,7 +599,7 @@ document.querySelectorAll("[data-view]").forEach(
 );
 $("#new-channel").onclick = newChannel;
 $("#refresh").onclick = async()=>{await refresh();if(view==='admin'&&data?.user.role==='admin')await loadAdmin();};
-$(".dialog-close").onclick = () => $("#dialog").close();
+
 $('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog-fields').replaceChildren();});
 $("#auth-toggle").onclick = () => {
   register = !register;
