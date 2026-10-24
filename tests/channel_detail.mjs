@@ -78,10 +78,10 @@ try{
  await sql(`DELETE FROM jobs WHERE channel_id=${q(a)}`);
  const jobRows=Array.from({length:31},(_,i)=>`(${q('detail_job_'+suffix+'_'+i)},${q(user.body.user.id)},${q(a)},${q('detail_'+suffix+'_'+i)},'transcode','done',0,${1000+i},${1000+i})`);
  await sql('INSERT INTO jobs(id,user_id,channel_id,episode_id,kind,status,available_at,created_at,updated_at) VALUES '+jobRows.join(','));
- const lastJobs=(await api(`/api/channels/${a}/detail?tab=jobs&offset=999`)).body;
+ const lastJobs=(await api(`/api/channels/${a}/detail?tab=jobs&tasks=history&offset=999`)).body;
  assert.deepEqual(lastJobs.page,{offset:30,limit:30,total:31,hasMore:false});assert.equal(lastJobs.jobs.length,1);
  await sql(`DELETE FROM jobs WHERE id=${q(lastJobs.jobs[0].id)}`);
- const fewerJobs=(await api(`/api/channels/${a}/detail?tab=jobs&offset=30`)).body;
+ const fewerJobs=(await api(`/api/channels/${a}/detail?tab=jobs&tasks=history&offset=30`)).body;
  assert.equal(fewerJobs.page.offset,0);assert.equal(fewerJobs.jobs.length,30);
  await sql(`DELETE FROM jobs WHERE channel_id=${q(a)}`);
  settings.settings={};await api(`/api/channels/${a}/settings`,settings);

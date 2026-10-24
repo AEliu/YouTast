@@ -37,6 +37,7 @@ let data = null,
   detailOffset = 0,
   listOffset = 0,
   searchQuery = '',
+  taskView = 'current',
   collectionData = null,
   collectionError = '',
   retryAt = 0,
@@ -44,6 +45,7 @@ let data = null,
 const sortNames = { source: "自动（最新合集按时间混排）", source_grouped: "按来源分组", published_asc: "发布时间：从早到晚", published_desc: "发布时间：从晚到早", added_asc: "加入顺序：先加入在前", added_desc: "加入顺序：后加入在前" };
 const statusNames = {
   queued: "等待处理",
+  stopped: "已停止",
   running: "处理中",
   done: "已完成",
   failed: "失败",
@@ -92,6 +94,7 @@ function showAuth() {
 function readRoute() {
   const [hash,params='']=location.hash.split('?');
   searchQuery=new URLSearchParams(params).get('q')||'';
+  taskView=new URLSearchParams(params).get('tasks')==='history'?'history':'current';
   const match=hash.match(/^#channel\/([\w-]+)(?:\/(episodes|sources|jobs|archive))?(?:\/(\d+))?$/);
   const list=hash.match(/^#(episodes|jobs)(?:\/(\d+))?$/);
   detailData=null;detailError='';
@@ -110,8 +113,8 @@ async function refresh(includeDashboard=true) {
   const needsDashboard=includeDashboard||!data||Date.now()-dashboardUpdatedAt>=60000;
   // Start the current page alongside bootstrap; route changes reuse dashboard
   // state, while mutations/manual and periodic refreshes still update it.
-  const pagePath=view==='channel'?`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}`:
-    ['episodes','jobs'].includes(view)?`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}`:
+  const pagePath=view==='channel'?`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}&tasks=${taskView}`:
+    ['episodes','jobs'].includes(view)?`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}&tasks=${taskView}`:
     view==='executors'?'/api/execution-policy':null;
   const pageRequest=pagePath?api(pagePath,requestOptions).then(value=>({value}),error=>({error})):Promise.resolve({});
   try {
@@ -127,7 +130,7 @@ async function refresh(includeDashboard=true) {
     if(view==='channel'&&detailData&&(detailOffset!==detailData.page.offset||searchQuery!==detailData.query)){
       detailOffset=detailData.page.offset;
       searchQuery=detailData.query;
-      history.replaceState(history.state,'',channelRoute(detailId,detailTab,detailOffset,searchQuery));
+      history.replaceState(history.state,'',channelRoute(detailId,detailTab,detailOffset,searchQuery,taskView));
     }
     if(view==='episodes'||view==='jobs'){
       try{
@@ -136,7 +139,7 @@ async function refresh(includeDashboard=true) {
         collectionData=model;collectionError='';
         if(listOffset!==model.page.offset||searchQuery!==model.query){
           listOffset=model.page.offset;searchQuery=model.query;
-          history.replaceState(history.state,'',listRoute(view,listOffset,searchQuery));
+          history.replaceState(history.state,'',listRoute(view,listOffset,searchQuery,taskView));
         }
       }catch(e){if(route!==location.hash){refreshAgain=true;return;}if(e.status===401)throw e;collectionData=null;collectionError=e.message;}
     }
@@ -200,7 +203,7 @@ $('#content').addEventListener('submit',async event=>{
   if(event.target.matches('[data-list-search]')){
     event.preventDefault();
     const query=String(new FormData(event.target).get('q')||'').trim();
-    const hash=view==='channel'?channelRoute(detailId,detailTab,0,query):listRoute(view,0,query);
+    const hash=view==='channel'?channelRoute(detailId,detailTab,0,query,taskView):listRoute(view,0,query,taskView);
     if(location.hash!==hash)location.hash=hash;else await refresh();
     return;
   }
@@ -425,7 +428,7 @@ $("#content").addEventListener("click", async (event) => {
     c = data?.channels.find((c) => c.id === cid);
   try {
     if(action==='clear-search'){
-      location.hash=view==='channel'?channelRoute(detailId,detailTab):listRoute(view);
+      location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView):listRoute(view,0,'',taskView);
       return;
     }
     if(action==='execution-resume') {await api('/api/execution-policy/resume',{method:'POST'});await refresh();toast('已恢复领取，将遵守启动间隔');return;}

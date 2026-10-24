@@ -1,3 +1,4 @@
+import {taskView,taskCondition,taskStateSql,taskCountsSql} from './task-view.js';
 import {windowCte} from './window-query.js';
 import {requireValue} from './lib.js';
 
@@ -29,6 +30,7 @@ export function episodeSearch(query,alias='e') {
 
 export async function userCollection(env,user,url,kind) {
  const options=listOptions(url),{query}=options;
+ const tasks=kind==='jobs'?taskView(url):'current';
  let base,values;
  const prefix=kind==='episodes'?windowCte('user_id=?')+',':'WITH';
  if(kind==='episodes'){
@@ -37,12 +39,13 @@ export async function userCollection(env,user,url,kind) {
   values=[user.id,user.id,...search.values];
  }else{
   const search=query?"AND (instr(lower(COALESCE(e.title,'')),lower(?))>0 OR instr(lower(c.title),lower(?))>0)":'';
-  base=`SELECT j.id,j.kind,j.status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? ${search}`;
+  base=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? AND ${taskCondition(tasks)} ${search}`;
   values=[user.id,user.id,...(query?[query,query]:[])];
  }
  const results=await env.DB.batch([
   env.DB.prepare(`${prefix} visible AS(${base}) SELECT COUNT(*) total FROM visible`).bind(...values),
   env.DB.prepare(`${prefix} visible AS(${base}) SELECT * FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${pageSql}`).bind(...values,...pageBindings(options)),
+  ...(kind==='jobs'?[env.DB.prepare(`SELECT ${taskCountsSql()} FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE j.user_id=? AND c.user_id=?`).bind(user.id,user.id)]:[]),
  ]);
- return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query};
+ return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query,...(kind==='jobs'?{tasks,counts:results[2].results[0]}:{})};
 }

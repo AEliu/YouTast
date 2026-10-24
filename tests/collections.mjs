@@ -43,7 +43,7 @@ try{
  assert.equal(ids.size,152,'Every episode remains reachable beyond old 100-item cap');
  let model=(await api('/api/episodes?offset=1000000')).body;
  assert.deepEqual(model.page,{offset:150,limit:30,total:152,hasMore:false});assert.equal(model.episodes.length,2);
- model=(await api('/api/jobs?offset=999')).body;
+ model=(await api('/api/jobs?tasks=history&offset=999')).body;
  assert.deepEqual(model.page,{offset:60,limit:30,total:82,hasMore:false});assert.equal(model.jobs.length,22);
  assert.ok(model.jobs.every(j=>j.channel_id===channel&&!('lease_token' in j)&&!('executor_id' in j)));
  model=(await api('/api/episodes?q='+encodeURIComponent('播客作者')+'&offset=999')).body;
@@ -51,12 +51,12 @@ try{
  for(const term of ['%','_','100%_literal'])assert.equal((await api('/api/episodes?q='+encodeURIComponent(term))).body.page.total,1,'Search wildcard characters are literal');
  assert.equal((await api('/api/episodes?q='+encodeURIComponent("' OR 1=1 --"))).body.page.total,0);
  assert.equal((await api('/api/episodes?q='+encodeURIComponent('测试'))).body.page.total,152);
- assert.equal((await api('/api/jobs?q='+encodeURIComponent('Browse fixture'))).body.page.total,82);
+ assert.equal((await api('/api/jobs?tasks=history&q='+encodeURIComponent('Browse fixture'))).body.page.total,82);
  model=(await api(`/api/channels/${channel}/detail?q=${encodeURIComponent('播客作者')}&offset=999`)).body;
  assert.equal(model.counts.episodes,152);assert.deepEqual(model.page,{offset:30,limit:30,total:35,hasMore:false});
  assert.equal((await api(`/api/channels/${channel}/detail?q=not-found&offset=999`)).body.page.offset,0);
  assert.equal((await api(`/api/channels/${channel}/detail?q=not-found`)).body.page.total,0);
- assert.equal((await api(`/api/channels/${channel}/detail?tab=jobs&q=Episode`)).body.page.total,81);
+ assert.equal((await api(`/api/channels/${channel}/detail?tab=jobs&tasks=history&q=Episode`)).body.page.total,81);
  await api(`/api/channels/${other}/detail?q=Episode`,undefined,404);
  for(const path of ['/api/episodes','/api/jobs']){
   await api(path,undefined,401,'');
