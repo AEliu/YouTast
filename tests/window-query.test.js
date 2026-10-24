@@ -76,8 +76,8 @@ test('page queries keep pagination, search and dashboard compatibility with larg
   const old=await import('data:text/javascript;base64,'+Buffer.from(baseline).toString('base64'));
   const measure=async fn=>{const start=performance.now();const value=await fn(env,channel,new URL('http://localhost/'));return {ms:performance.now()-start,value};};
   const before=await measure(old.channelDetail),after=await measure(channelDetail);
-  const comparable={...after.value,counts:Object.fromEntries(Object.keys(before.value.counts).map(key=>[key,after.value.counts[key]]))};
-  assert.deepEqual(comparable,before.value);
+  const comparable={...after.value,episodes:after.value.episodes.map(({task_dismissed,...episode})=>episode),counts:Object.fromEntries(Object.keys(before.value.counts).map(key=>[key,after.value.counts[key]]))};
+  assert.deepEqual(JSON.parse(JSON.stringify(comparable)),JSON.parse(JSON.stringify(before.value)));
   console.log(JSON.stringify({fixtureEpisodes:6000,channelEpisodes:300,beforeMs:Math.round(before.ms),afterMs:Math.round(after.ms),fullBytes:JSON.stringify(full).length,summaryBytes:JSON.stringify(summary).length}));
   }
  }finally{db.close();}

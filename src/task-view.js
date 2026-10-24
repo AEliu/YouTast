@@ -16,7 +16,7 @@ export function taskView(url) {
 }
 export function taskStateSql(alias='j') {
  const reasons=stoppedReasons.map(s=>"'"+s.replaceAll("'","''")+"'").join(',');
- return `CASE WHEN ${alias}.status='failed' AND ${alias}.error IN(${reasons}) THEN 'stopped' ELSE ${alias}.status END`;
+ return `CASE WHEN ${alias}.dismissed_at IS NOT NULL THEN 'dismissed' WHEN ${alias}.status='failed' AND ${alias}.error IN(${reasons}) THEN 'stopped' ELSE ${alias}.status END`;
 }
 export function taskCondition(view,alias='j') {
  const state=taskStateSql(alias);

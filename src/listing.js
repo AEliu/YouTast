@@ -1,3 +1,4 @@
+import {taskSearch} from './task-actions.js';
 import {taskView,taskCondition,taskStateSql,taskCountsSql} from './task-view.js';
 import {windowCte} from './window-query.js';
 import {requireValue} from './lib.js';
@@ -38,14 +39,14 @@ export async function userCollection(env,user,url,kind) {
   base=`SELECT e.*,c.title channel_title,c.feed_token FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.user_id=? AND e.id IN(SELECT id FROM scoped_window) AND ${search.sql}`;
   values=[user.id,user.id,...search.values];
  }else{
-  const search=query?"AND (instr(lower(COALESCE(e.title,'')),lower(?))>0 OR instr(lower(c.title),lower(?))>0)":'';
-  base=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? AND ${taskCondition(tasks)} ${search}`;
-  values=[user.id,user.id,...(query?[query,query]:[])];
+  const search=taskSearch(query);
+  base=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? AND ${taskCondition(tasks)} AND ${search.sql}`;
+  values=[user.id,user.id,...search.values];
  }
  const results=await env.DB.batch([
-  env.DB.prepare(`${prefix} visible AS(${base}) SELECT COUNT(*) total FROM visible`).bind(...values),
-  env.DB.prepare(`${prefix} visible AS(${base}) SELECT * FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${pageSql}`).bind(...values,...pageBindings(options)),
+  env.DB.prepare(`${prefix} visible AS(${base}) SELECT COUNT(*) total${kind==='jobs'?",COALESCE(SUM(display_status='failed'),0) failed_total":''} FROM visible`).bind(...values),
+  env.DB.prepare(`${prefix} visible AS(${base}) SELECT *${kind==='episodes'?",(SELECT dismissed_at FROM jobs WHERE episode_id=visible.id AND kind='transcode') task_dismissed":''} FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${pageSql}`).bind(...values,...pageBindings(options)),
   ...(kind==='jobs'?[env.DB.prepare(`SELECT ${taskCountsSql()} FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE j.user_id=? AND c.user_id=?`).bind(user.id,user.id)]:[]),
  ]);
- return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query,...(kind==='jobs'?{tasks,counts:results[2].results[0]}:{})};
+ return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query,...(kind==='jobs'?{tasks,failedTotal:results[0].results[0].failed_total,counts:results[2].results[0]}:{})};
 }

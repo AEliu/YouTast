@@ -1,3 +1,4 @@
+import {previewTaskAction,applyTaskAction} from './task-actions.js';
 import {windowCte} from './window-query.js';
 import {audioMedia} from './audio.js';
 import {channelDetail} from './channel-detail.js';
@@ -680,11 +681,15 @@ async function api(request, env, url) {
     ).run();
     return json({ ok: true });
   }
+  if(method==='POST'&&(path==='/api/jobs/bulk/preview'||path==='/api/jobs/bulk')){
+    const input=await body(request);
+    return json(await (path.endsWith('/preview')?previewTaskAction:applyTaskAction)(env,user,input));
+  }
   const retry = path.match(/^\/api\/jobs\/([\w-]+)\/retry$/);
   if (retry && method === "POST") {
     await stmt(
       env,
-      "UPDATE jobs SET status='queued',attempts=0,error=NULL,available_at=?,updated_at=? WHERE id=? AND user_id=? AND status='failed'",
+      "UPDATE jobs SET status='queued',attempts=0,error=NULL,available_at=?,updated_at=? WHERE id=? AND user_id=? AND status='failed' AND dismissed_at IS NULL",
       now(),
       now(),
       retry[1],
@@ -699,7 +704,7 @@ async function api(request, env, url) {
     const result=await env.DB.batch([
       stmt(env,`INSERT OR IGNORE INTO jobs(id,user_id,channel_id,episode_id,kind,available_at,created_at,updated_at)
         SELECT ?,?,?,?,'transcode',?,?,? WHERE EXISTS(SELECT 1 FROM episodes WHERE id=? AND object_key IS NULL)`,id(),user.id,e.channel_id,e.id,now(),now(),now(),e.id),
-      stmt(env,`UPDATE jobs SET status='queued',attempts=0,error=NULL,available_at=?,updated_at=? WHERE episode_id=? AND user_id=? AND status IN('failed','done')
+      stmt(env,`UPDATE jobs SET status='queued',dismissed_at=NULL,attempts=0,error=NULL,available_at=?,updated_at=? WHERE episode_id=? AND user_id=? AND status IN('failed','done')
         AND EXISTS(SELECT 1 FROM episodes WHERE id=? AND object_key IS NULL)`,now(),now(),e.id,user.id,e.id),
     ]);
     requireValue(result.some(r=>r.meta.changes>0),409,'音频仍可用或任务已在处理中');

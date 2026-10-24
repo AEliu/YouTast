@@ -119,3 +119,5 @@ admin、invitations、latest_cleanup、job_recovery、sources_reuse、storage_re
 来源自动发现新增 `npm run test:discovery`：完整清单、首次范围、增量批次、租约、能力与万条边界的真实本地D1验证。专用环境与回归边界见[来源发现说明](SOURCE-DISCOVERY.md)。不要让不同API脚本并发写同一Miniflare状态目录。
 
 任务分类专项 `npm run test:tasks` 支持配对 `TEST_ORIGIN` / `TEST_PERSIST_TO`，仅限本地。验证当前/历史、正常停止、重试、完成归零与隔离；详见[任务分类](TASKS.md)。`--keep` 仅供成功后的浏览器验证保留账号，验证完成须精确清理并确认。
+
+批量失败任务专项 `npm run test:task-actions` 使用配对本地 `TEST_ORIGIN` / `TEST_PERSIST_TO`，需要应用至0018。覆盖筛选/跨页、重试/清理、并发数量变化、CSRF/权限、来源扫描去重与清理后显式重新生成；默认精确清理，`--keep`仅供浏览器验收后清理。

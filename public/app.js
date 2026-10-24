@@ -1,3 +1,4 @@
+import {updateTaskSelection} from './task-actions-ui.js';
 import {installDialogDismiss} from './dialog-ui.js';
 import {renderChannelDetail} from './channel-detail.js';
 import {renderCollection,listRoute,channelRoute} from './list-ui.js';
@@ -191,6 +192,7 @@ function render() {
   if (view === "settings") content.innerHTML = renderSettings();
   if (view === "executors")
     content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1||e.audio_control_version!==1||e.replay_control_version!==1||e.discovery_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数、最新N、AAC音频、直播回放及播放列表完整发现。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
+  updateTaskSelection(content);
 }
 function empty(text) {
   return `<div class="empty">${text}</div>`;
@@ -413,6 +415,30 @@ function openSourceSettings(channel,source){
     toast('来源设置已保存');return ()=>openSources(data.channels.find(c=>c.id===channel.id));
   });
 }
+$('#content').addEventListener('change',event=>{
+ if(event.target.matches('[data-failed-job],[data-failed-page]'))updateTaskSelection($('#content'),event);
+});
+async function bulkTaskAction(action,button) {
+ const model=view==='channel'?detailData:collectionData;
+ if(!model||model.tasks==='history')return;
+ const route=location.hash,operation=action.includes('dismiss')?'dismiss':'retry';
+ const ids=action.endsWith('-one')?[button.dataset.id]:[...$('#content').querySelectorAll('[data-failed-job]:checked')].map(e=>e.value);
+ const all=action.endsWith('-all');
+ if(!all&&!ids.length)return;
+ const payload={action:operation,...(all?{all:true}:{ids}),query:searchQuery,...(view==='channel'?{channel_id:detailId}:{})};
+ button.disabled=true;
+ try {
+  const preview=await api('/api/jobs/bulk/preview',{method:'POST',body:JSON.stringify(payload)});
+  if(route!==location.hash)return;
+  if(!preview.count){toast(operation==='retry'?'没有可重试的失败任务；来源可能已暂停或已有活动任务':'没有可清理的失败任务');return;}
+  const scope=all?`${view==='channel'?'当前频道':'全部频道'}中与搜索条件匹配的全部失败任务（包含其他分页）`:'所选失败任务';
+  const skipped=preview.matched-preview.count;
+  confirmAction(operation==='retry'?'批量重试失败任务':'清理失败任务',`${scope}：${preview.count} 项。${operation==='retry'?`确认后重新排队，按执行器的节奏处理。${skipped?`另有 ${skipped} 项因来源已暂停、已有活动任务或重复扫描而跳过。`:''}`:'确认后从任务列表移除；节目和已有音频保留，之后仍可从节目入口重新生成。清理不暂停来源后续的自动同步。'}`,async()=>{
+   const result=await api('/api/jobs/bulk',{method:'POST',body:JSON.stringify({...payload,expected_count:preview.count,expected_matched:preview.matched})});
+   await refresh();toast(`已${operation==='retry'?'重新排队':'清理'} ${result.changed} 项失败任务`);
+  });
+ }finally{button.disabled=false;updateTaskSelection($('#content'));}
+}
 function confirmAction(title, description, handler) {
   openDialog(title, `<p>${escape(description)}</p>`, "确认", handler);
 }
@@ -427,6 +453,7 @@ $("#content").addEventListener("click", async (event) => {
     cid = button.dataset.id,
     c = data?.channels.find((c) => c.id === cid);
   try {
+    if(action.startsWith('tasks-')){await bulkTaskAction(action,button);return;}
     if(action==='clear-search'){
       location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView):listRoute(view,0,'',taskView);
       return;
@@ -667,6 +694,7 @@ document.addEventListener("visibilitychange", () => {
   if (
     !document.hidden &&
     !document.activeElement?.closest('[data-list-search]') &&
+    !document.querySelector('[data-failed-job]:checked') &&
     !["settings","admin","executors"].includes(view) &&
     data &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)
@@ -680,6 +708,7 @@ setInterval(() => {
     !document.hidden &&
     !$("#dialog").open &&
     !document.activeElement?.closest('[data-list-search]') &&
+    !document.querySelector('[data-failed-job]:checked') &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)
   )
     refresh();
