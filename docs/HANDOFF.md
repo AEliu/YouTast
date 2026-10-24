@@ -2,7 +2,7 @@
 
 更新时间：2026-10-24（Asia/Shanghai）。本文是当前源码、发布和待办的交接入口；历史验证按原日期与环境标注，不把旧部署、旧进程或旧测试数量当成当前事实。
 
-文档导航：[开发与测试](DEVELOPMENT.md) · [版本与发布](RELEASING.md) · [分页修复验证](PAGINATION-VERIFICATION.md) · [列表与搜索验证](COLLECTIONS-VERIFICATION.md) · [账号安全](ACCOUNT-SECURITY.md) · [运维与备份](OPERATIONS.md) · [来源自动发现](SOURCE-DISCOVERY.md) · [来源控制与弹窗](SOURCE-CONTROLS.md) · [变更记录](../CHANGELOG.md)。
+文档导航：[页面性能](PERFORMANCE.md) · [开发与测试](DEVELOPMENT.md) · [版本与发布](RELEASING.md) · [分页修复验证](PAGINATION-VERIFICATION.md) · [列表与搜索验证](COLLECTIONS-VERIFICATION.md) · [账号安全](ACCOUNT-SECURITY.md) · [运维与备份](OPERATIONS.md) · [来源自动发现](SOURCE-DISCOVERY.md) · [来源控制与弹窗](SOURCE-CONTROLS.md) · [变更记录](../CHANGELOG.md)。
 
 ## 1. 状态口径与当前交付
 
@@ -12,6 +12,8 @@
 - 运行状态是查询时点的快照。2026-10-24发布后只读健康检查返回healthy、activeJobs=0，rate/window/audio/replay/discovery均具备，最近一次轮询距查询82秒（阈值400秒），原未暂停状态已恢复。这仅证明该凭证、API/数据库通路及最近轮询；YouTube大型列表与主机长期运行仍需相应验收，不保存历史PID作为未来健康证明。
 
 线上实例：<https://youtast.yi-yi.workers.dev/>；本地常用地址：<http://127.0.0.1:8787/>。
+
+本轮页面性能优化已完成本地验证，待发布核验；详情见[性能记录](PERFORMANCE.md)。
 
 最近交付：
 

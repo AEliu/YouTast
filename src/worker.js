@@ -1,3 +1,4 @@
+import {windowCte} from './window-query.js';
 import {audioMedia} from './audio.js';
 import {channelDetail} from './channel-detail.js';
 import {userCollection} from './listing.js';
@@ -336,20 +337,23 @@ async function api(request, env, url) {
   if (path === "/api/me" && method === "GET") return json({ user });
   if((path==='/api/episodes'||path==='/api/jobs')&&method==='GET')return json(await userCollection(env,user,url,path.slice(5)));
   if (path === "/api/dashboard" && method === "GET") {
+    const window=windowCte('user_id=?');
+    const summary=url.searchParams.get('summary')==='1';
     const result = await env.DB.batch([
+      stmt(env,`${window}, channel_counts AS (
+        SELECT e.channel_id,COUNT(w.id) episode_count,COUNT(*)-COUNT(w.id) archived_count
+        FROM episodes e JOIN window_channels c ON c.id=e.channel_id
+        LEFT JOIN scoped_window w ON w.id=e.id WHERE e.object_key IS NOT NULL GROUP BY e.channel_id
+      ) SELECT c.*,COALESCE(n.episode_count,0) episode_count,COALESCE(n.archived_count,0) archived_count
+      FROM channel_preferences c LEFT JOIN channel_counts n ON n.channel_id=c.id WHERE c.user_id=? ORDER BY c.created_at DESC`,user.id,user.id),
       stmt(
         env,
-        `SELECT c.*, (SELECT COUNT(*) FROM episodes e WHERE e.channel_id=c.id AND e.object_key IS NOT NULL AND e.id IN(SELECT id FROM active_episode_window WHERE channel_id=c.id)) AS episode_count,(SELECT COUNT(*) FROM episodes e WHERE e.channel_id=c.id AND e.object_key IS NOT NULL AND e.id NOT IN(SELECT id FROM active_episode_window WHERE channel_id=c.id)) AS archived_count FROM channel_preferences c WHERE c.user_id=? ORDER BY c.created_at DESC`,
+        summary?'SELECT id FROM jobs WHERE user_id=? AND 0':`SELECT j.id,j.kind,j.status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END AS error,j.created_at,j.updated_at,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? ORDER BY j.created_at DESC LIMIT 80`,
         user.id,
       ),
       stmt(
         env,
-        `SELECT j.id,j.kind,j.status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END AS error,j.created_at,j.updated_at,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? ORDER BY j.created_at DESC LIMIT 80`,
-        user.id,
-      ),
-      stmt(
-        env,
-        `SELECT e.* FROM episodes e JOIN channels c ON c.id=e.channel_id WHERE c.user_id=? AND e.id IN(SELECT id FROM active_episode_window WHERE channel_id=c.id) ORDER BY e.created_at DESC,e.id LIMIT 100`,
+        summary?'SELECT id FROM episodes WHERE channel_id=? AND 0':`${window} SELECT e.* FROM episodes e WHERE e.id IN(SELECT id FROM scoped_window) ORDER BY e.created_at DESC,e.id LIMIT 100`,
         user.id,
       ),
       stmt(

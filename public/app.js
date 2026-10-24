@@ -27,6 +27,9 @@ let data = null,
   register = false,
   refreshing = false,
   refreshAgain = false,
+  refreshDashboardAgain = false,
+  refreshController = null,
+  dashboardUpdatedAt = 0,
   detailData = null,
   detailError = "",
   detailId = "",
@@ -97,16 +100,27 @@ function readRoute() {
   else if(list){view=list[1];listOffset=Number(list[2]||0);detailId='';}
   else {const name=hash.slice(1);view=Object.hasOwn(viewInfo,name)&&name!=='channel'?name:'channels';detailId='';searchQuery='';}
 }
-async function refresh() {
+async function refresh(includeDashboard=true) {
   if(Date.now()<retryAt)return;
-  if(refreshing){refreshAgain=true;return;}
+  if(refreshing){refreshAgain=true;refreshDashboardAgain ||= includeDashboard;return;}
   const route=location.hash;
   refreshing = true;
+  refreshController=new AbortController();
+  const requestOptions={signal:refreshController.signal};
+  const needsDashboard=includeDashboard||!data||Date.now()-dashboardUpdatedAt>=60000;
+  // Start the current page alongside bootstrap; route changes reuse dashboard
+  // state, while mutations/manual and periodic refreshes still update it.
+  const pagePath=view==='channel'?`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}`:
+    ['episodes','jobs'].includes(view)?`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}`:
+    view==='executors'?'/api/execution-policy':null;
+  const pageRequest=pagePath?api(pagePath,requestOptions).then(value=>({value}),error=>({error})):Promise.resolve({});
   try {
-    data = await api("/api/dashboard");
+    if(needsDashboard){data=await api('/api/dashboard?summary=1',requestOptions);dashboardUpdatedAt=Date.now();}
+    const pageResult=await pageRequest;
+    const pageModel=()=>{if(pageResult.error)throw pageResult.error;return pageResult.value;};
     if(route!==location.hash){refreshAgain=true;return;}
     if(view==='channel') {
-      try {detailData=await api(`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}`);detailError='';}
+      try {detailData=pageModel();detailError='';}
       catch(e){if(e.status===401)throw e;detailData=null;detailError=e.message;}
     }
     if(route!==location.hash){refreshAgain=true;return;}
@@ -117,7 +131,7 @@ async function refresh() {
     }
     if(view==='episodes'||view==='jobs'){
       try{
-        const model=await api(`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}`);
+        const model=pageModel();
         if(route!==location.hash){refreshAgain=true;return;}
         collectionData=model;collectionError='';
         if(listOffset!==model.page.offset||searchQuery!==model.query){
@@ -126,20 +140,22 @@ async function refresh() {
         }
       }catch(e){if(route!==location.hash){refreshAgain=true;return;}if(e.status===401)throw e;collectionData=null;collectionError=e.message;}
     }
-    if(view==='executors')executionData=await api('/api/execution-policy');
+    if(view==='executors')executionData=pageModel();
     if(view==='admin'&&data.user.role!=='admin'){view='channels';adminData=null;}
     $("#initial").hidden = true;
     $("#auth").hidden = true;
     $("#app").hidden = false;
     render();
   } catch (e) {
+    if(e.name==='AbortError')return;
     if (!data) {
       showAuth();
       if (e.status !== 401) $("#auth-error").textContent = e.message;
     } else toast(e.message);
   } finally {
     refreshing = false;
-    if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}
+    refreshController=null;
+    if(refreshAgain){const full=refreshDashboardAgain;refreshAgain=false;refreshDashboardAgain=false;queueMicrotask(()=>refresh(full));}
   }
 }
 function render() {
@@ -509,7 +525,7 @@ $("#content").addEventListener("click", async (event) => {
       };
     }
     if (action === "channel-settings") openChannelSettings(c);
-    if (action === "episode-details") openEpisodeDetails(detailData?.episodes.find(e=>e.id===cid)||collectionData?.episodes?.find(e=>e.id===cid)||data.episodes.find(e=>e.id===cid));
+    if (action === "episode-details") openEpisodeDetails(detailData?.episodes.find(e=>e.id===cid)||collectionData?.episodes?.find(e=>e.id===cid)||data.episodes?.find(e=>e.id===cid));
     if (action === "sort") {
       openDialog("频道节目排序", `<p>自动排序：开启最新N时，全部来源按发布时间从新到旧混排；关闭最新N时，按来源分组。显式选择“按来源分组”可始终分组：playlist 保留列表顺序，作者视频从早到晚，单视频按加入先后。重复视频归入最早添加且已发现它的来源。下载完成先后不影响顺序。</p><label>排序方式<select name="sort_mode">${Object.entries({inherit:'跟随用户默认',...sortNames}).map(([key,label])=>`<option value="${key}" ${key===(JSON.parse(c.settings||'{}').sort_mode||'inherit')?'selected':''}>${label}</option>`).join('')}</select></label><p>缺少发布日期的历史节目暂按作者列表顺序反排；统一按发布时间排序时，缺少日期的节目排在末尾。从新到旧混排的 RSS 提供最新优先提示，其他顺序提供串行提示；播放器自身的排序设置可能覆盖它。</p>`, "保存排序", async f=>{
         await api(`/api/channels/${cid}/sort`, {method:"POST",body:JSON.stringify({sort_mode:f.get("sort_mode")})});
@@ -660,14 +676,16 @@ setInterval(() => {
     !["settings","admin","executors"].includes(view) &&
     !document.hidden &&
     !$("#dialog").open &&
+    !document.activeElement?.closest('[data-list-search]') &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)
   )
     refresh();
 }, 60000);
 window.addEventListener('hashchange',async()=>{
   readRoute();
-  if(!data)return;
-  render();window.scrollTo(0,0);await refresh();
+  refreshController?.abort();
+  if(!data){if(refreshing){refreshAgain=true;}else await refresh(false);return;}
+  render();window.scrollTo(0,0);await refresh(false);
   if(view==='admin'&&data?.user.role==='admin'){try{await loadAdmin();}catch(e){toast(e.message);}}
 });
 readRoute();
