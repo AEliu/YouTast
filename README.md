@@ -235,6 +235,37 @@ Python 执行器进程测试（需要 FFmpeg/FFprobe 和已启动的本地测试
 
 ## 运维脚本
 
+### Windows 后台运行（完整源码）
+
+仓库中的 `scripts/windows-executor.ps1` 和 `scripts/windows-runner.py` 支持在 Windows 开机后运行执行器；公开执行器 ZIP 也包含这两个脚本；解压包的安装步骤见包内 README。先安装 Python 3.11+、FFmpeg/FFprobe 和 Node.js 22+ 或 Deno 2.3+，在仓库根目录创建虚拟环境并安装依赖：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U -r executor/requirements.txt
+New-Item -ItemType Directory -Force .secrets
+```
+
+在应用「执行器」页面为这台机器创建密钥，用编辑器创建 `.secrets/windows-executor.env`，填写以下两行，将占位值换成应用地址和密钥。每行使用 `名称=值`，不要加引号；保护该文件，不要提交或分享。
+
+```text
+YOUTAST_URL=https://your-worker.workers.dev
+YOUTAST_TOKEN=这里填写执行器密钥
+```
+
+以管理员身份打开 PowerShell，在仓库根目录运行：
+
+```powershell
+.\scripts\windows-executor.ps1 -Boot
+# 查看日志
+Get-Content .wrangler\windows-executor\executor.log -Tail 50
+# 停止当前执行器；保留开机自启动
+.\scripts\windows-executor.ps1 -Stop
+# 停止并移除开机自启动
+.\scripts\windows-executor.ps1 -Stop -RemoveAutoStart
+```
+
+使用 `-Boot` 会注册开机触发的计划任务，并以 Windows SYSTEM 账户运行，无需用户登录。注册失败会报错，不会假装已设置成功。SYSTEM 必须能读取源码、虚拟环境、配置文件及可选 cookies，并能写入 `.wrangler/windows-executor`；安装在仅当前用户可访问的位置或依赖用户网络盘时可能无法运行。SYSTEM 的 PATH 与用户不同：请确保 FFmpeg、FFprobe 和 Node/Deno 在系统 PATH 中，或在配置文件添加 `PATH=完整搜索路径`。不带 `-Boot` 时仍使用当前用户登录触发；注册失败则只在当前会话中启动。停止或移除 SYSTEM 任务也需要管理员权限。在应用「执行器」页面查看报到状态。需要 cookies 或 PO Token 时，可将对应路径写入同一配置文件，详见 [执行器说明](executor/README.md)。
+
 `bootstrap-admin.mjs`、`bootstrap-windows-executor.mjs` 和 `verify-production.mjs` 使用 `YOUTAST_URL` 指定自己的 HTTPS 应用地址。Windows 引导脚本也可复用本机已保存的账号配置。生产验证会创建并清理临时测试账号；只对你管理的实例运行。私密配置放在 `.secrets/`，不提交到 Git。
 
 ## YouTube直播回放

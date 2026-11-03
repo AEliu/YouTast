@@ -1,4 +1,4 @@
-param([switch]$Stop, [switch]$RemoveAutoStart)
+param([switch]$Stop, [switch]$RemoveAutoStart, [switch]$Boot)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskPython = Join-Path $taskRoot '.venv\Scripts\pythonw.exe'
@@ -30,7 +30,19 @@ if (-not (Test-Path -LiteralPath $taskPython) -or -not (Test-Path -LiteralPath $
 New-Item -ItemType Directory -Path $taskStateDir -Force | Out-Null
 $taskArguments = '"{0}" --config "{1}"' -f $taskRunner, $taskConfig
 $taskAutoStart = $false
-try {
+if ($Boot) {
+    $taskIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $taskIsAdmin = ([System.Security.Principal.WindowsPrincipal]::new($taskIdentity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $taskIsAdmin) { throw 'Boot startup requires an elevated PowerShell window' }
+    $taskAction = New-ScheduledTaskAction -Execute $taskPython -Argument $taskArguments -WorkingDirectory $taskRoot
+    $taskTrigger = New-ScheduledTaskTrigger -AtStartup
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description "YouTast outbound executor for $taskRoot" -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    $taskAutoStart = $true
+    Write-Output "Configured boot startup under SYSTEM: $taskName"
+} else { try {
     $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $taskAction = New-ScheduledTaskAction -Execute $taskPython -Argument $taskArguments -WorkingDirectory $taskRoot
     $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $taskUser
@@ -44,6 +56,6 @@ try {
     Write-Warning "Login startup was not installed: $($_.Exception.Message)"
     Start-Process -FilePath $taskPython -ArgumentList $taskArguments -WorkingDirectory $taskRoot -WindowStyle Hidden | Out-Null
     Write-Output 'Started a hidden process for the current session.'
-}
+} }
 @{ task_name=$taskName; auto_start=$taskAutoStart; root=$taskRoot; configured_at=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskStateDir 'installation.json') -Encoding UTF8
 Write-Output "Logs: $(Join-Path $taskStateDir 'executor.log')"

@@ -31,7 +31,9 @@ docker compose up -d
 
 ## 不使用 Docker
 
-安装 Python 3.11+、FFmpeg，以及 Node.js 22+ 或 Deno 2.3+。创建虚拟环境并安装：
+在解压后的执行器目录打开终端。安装 Python 3.11+、FFmpeg（包括 `ffprobe`），以及 Node.js 22+ 或 Deno 2.3+，并确保它们在 PATH 中。先在应用「执行器」页面为这台机器创建密钥；将下面的应用地址替换为自己的地址，提示时输入该密钥。
+
+Linux/macOS（使用 Bash）：
 
 ```bash
 python3 -m venv .venv
@@ -52,7 +54,40 @@ $env:YOUTAST_TOKEN = [System.Net.NetworkCredential]::new('', $executorSecret).Pa
 .\.venv\Scripts\python.exe agent.py
 ```
 
-不使用 Docker 时，`.env` 不会自动读取，请按上面的命令设置环境变量。关闭终端或按 Ctrl+C 会停止执行器；长期运行可由机器管理员配置系统服务。
+不使用 Docker 时，`.env` 不会自动读取，请按上面的命令设置环境变量。环境变量只在当前终端会话中有效；关闭终端或按 Ctrl+C 会停止执行器，重新启动时需要重新设置变量。长期运行可由机器管理员配置系统服务。在应用「执行器」页面查看机器的报到状态。
+
+### Windows 开机自动启动
+
+在解压目录安装上述依赖，并在 PowerShell 中创建虚拟环境（ZIP 中依赖文件位于根目录）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U -r requirements.txt
+New-Item -ItemType Directory -Force .secrets
+```
+
+在应用的「执行器」页面创建该机器的密钥，用编辑器创建 `.secrets\windows-executor.env`，每行填写一个值，不加引号：
+
+```text
+YOUTAST_URL=https://your-worker.workers.dev
+YOUTAST_TOKEN=这里填写执行器密钥
+```
+
+以管理员身份打开 PowerShell，进入解压目录并运行：
+
+```powershell
+.\scripts\windows-executor.ps1 -Boot
+# 查看日志
+Get-Content .wrangler\windows-executor\executor.log -Tail 50
+# 停止；保留开机启动
+.\scripts\windows-executor.ps1 -Stop
+# 停止并移除开机启动
+.\scripts\windows-executor.ps1 -Stop -RemoveAutoStart
+```
+
+`-Boot` 注册开机触发任务并立即启动，以 SYSTEM 账户运行，无需用户登录。注册失败会报错；停止和移除任务也需要管理员权限。在应用中查看报到状态，重启后可查看日志确认启动。SYSTEM 必须能读取安装目录、Python、配置和可选 cookies，并能写入日志目录；不要放在 SYSTEM 无法访问的位置或用户网络盘。SYSTEM 的 PATH 可能与当前用户不同，确保 FFmpeg、FFprobe 和 Node/Deno 在系统 PATH，或在配置中添加 `PATH=完整搜索路径`。如果机器使用代理，也可在配置中添加 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`。配置文件包含密钥，应限制访问。
+
+不带 `-Boot` 的启动命令使用当前用户登录触发；如果注册失败，仅在当前会话启动隐藏进程。不要将登录启动误认为开机启动。
 
 ## 运行说明
 

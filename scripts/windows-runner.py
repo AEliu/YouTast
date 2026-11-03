@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "executor"))
+sys.path.insert(0, str(ROOT / "executor" if (ROOT / "executor" / "agent.py").is_file() else ROOT))
 import agent
 
 
@@ -44,7 +44,7 @@ def main():
             raise RuntimeError("Executor environment file is incomplete")
         os.environ[key] = values[key]
     # Optional trusted proxy settings stay in the private file/environment, never in arguments.
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "YOUTAST_COOKIES_FILE", "YOUTAST_POT_PROVIDER_HOME"):
+    for key in ("PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "YOUTAST_COOKIES_FILE", "YOUTAST_POT_PROVIDER_HOME"):
         if values.get(key):
             os.environ[key] = values[key]
     if values.get("YOUTAST_POT_PROVIDER_HOME"):

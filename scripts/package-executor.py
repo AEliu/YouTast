@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 root = Path(__file__).resolve().parents[1]
 source = root / "executor"
 files = ["agent.py", "requirements.txt", "requirements-pot.txt", "Dockerfile", "compose.yaml", "README.md", ".env.example"]
+script_files = ["windows-executor.ps1", "windows-runner.py"]
 example = (source / ".env.example").read_text(encoding="utf-8")
 settings = dict(line.split("=", 1) for line in example.splitlines() if line.strip() and not line.lstrip().startswith("#"))
 url = urlsplit(settings.get("YOUTAST_URL", ""))
@@ -21,14 +22,19 @@ with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         if path.is_symlink() or path.resolve().parent != source.resolve():
             raise SystemExit("Unexpected package source path")
         archive.write(path, "youtast-executor/" + name)
+    for name in script_files:
+        path = root / "scripts" / name
+        if path.is_symlink() or path.resolve().parent != (root / "scripts").resolve():
+            raise SystemExit("Unexpected package script path")
+        archive.write(path, "youtast-executor/scripts/" + name)
 with zipfile.ZipFile(output) as archive:
     assert archive.testzip() is None
-    assert sorted(archive.namelist()) == sorted("youtast-executor/" + name for name in files)
+    assert sorted(archive.namelist()) == sorted(["youtast-executor/" + name for name in files] + ["youtast-executor/scripts/" + name for name in script_files])
 checksum = hashlib.sha256(output.read_bytes()).hexdigest()
 output.with_suffix(".zip.sha256").write_text(checksum + "  " + output.name + "\n", encoding="utf-8")
 downloads = root / "public" / "downloads"
 downloads.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(output, downloads / output.name)
 shutil.copyfile(output.with_suffix(".zip.sha256"), downloads / (output.name + ".sha256"))
-print(f"Packaged {len(files)} allowlisted files: {output}")
+print(f"Packaged {len(files) + len(script_files)} allowlisted files: {output}")
 print(f"SHA-256: {checksum}")
