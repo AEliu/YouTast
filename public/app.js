@@ -1,4 +1,5 @@
 import {updateTaskSelection} from './task-actions-ui.js';
+import {updateAudioSelection} from './audio-actions-ui.js';
 import {installDialogDismiss} from './dialog-ui.js';
 import {renderChannelDetail} from './channel-detail.js';
 import {renderCollection,listRoute,channelRoute} from './list-ui.js';
@@ -193,6 +194,7 @@ function render() {
   if (view === "executors")
     content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1||e.audio_control_version!==1||e.replay_control_version!==1||e.discovery_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数、最新N、AAC音频、直播回放及播放列表完整发现。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
   updateTaskSelection(content);
+  updateAudioSelection(content);
 }
 function empty(text) {
   return `<div class="empty">${text}</div>`;
@@ -417,6 +419,7 @@ function openSourceSettings(channel,source){
 }
 $('#content').addEventListener('change',event=>{
  if(event.target.matches('[data-failed-job],[data-failed-page]'))updateTaskSelection($('#content'),event);
+ if(event.target.matches('[data-audio-choice],[data-audio-page]'))updateAudioSelection($('#content'),event);
 });
 async function bulkTaskAction(action,button) {
  const model=view==='channel'?detailData:collectionData;
@@ -453,6 +456,15 @@ $("#content").addEventListener("click", async (event) => {
     cid = button.dataset.id,
     c = data?.channels.find((c) => c.id === cid);
   try {
+    if(action==='audio-delete-selected') {
+      const ids=[...$('#content').querySelectorAll('[data-audio-choice]:checked')].map(e=>e.value);
+      if(!ids.length)return;
+      confirmAction('批量删除音频',`将移除所选 ${ids.length} 个单集的音频及其 RSS 条目。节目记录保留，可重新生成；其他频道的共享音频和播放器里已下载的文件不受影响。存储空间在后台清理后释放。`,async()=>{
+        const result=await api('/api/episodes/bulk-delete',{method:'POST',body:JSON.stringify({ids})});
+        return ()=>toast(`已删除 ${result.changed} 个音频${result.skipped?`，${result.skipped} 个正在处理或已变化，未删除`:''}`);
+      });
+      return;
+    }
     if(action.startsWith('tasks-')){await bulkTaskAction(action,button);return;}
     if(action==='clear-search'){
       location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView):listRoute(view,0,'',taskView);
@@ -590,7 +602,7 @@ $("#content").addEventListener("click", async (event) => {
     if (action === "delete-episode")
       confirmAction(
         "删除音频",
-        "音频将从存储与 RSS 移除；任务记录保留，可通过重试重新生成。",
+        "音频将从此单集与 RSS 移除，存储空间在后台清理后释放；节目记录保留，可重新生成。",
         async () => {
           await api(`/api/episodes/${cid}`, { method: "DELETE" });
           toast("音频已删除");
@@ -694,7 +706,7 @@ document.addEventListener("visibilitychange", () => {
   if (
     !document.hidden &&
     !document.activeElement?.closest('[data-list-search]') &&
-    !document.querySelector('[data-failed-job]:checked') &&
+    !document.querySelector('[data-failed-job]:checked, [data-audio-choice]:checked') &&
     !["settings","admin","executors"].includes(view) &&
     data &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)
@@ -708,7 +720,7 @@ setInterval(() => {
     !document.hidden &&
     !$("#dialog").open &&
     !document.activeElement?.closest('[data-list-search]') &&
-    !document.querySelector('[data-failed-job]:checked') &&
+    !document.querySelector('[data-failed-job]:checked, [data-audio-choice]:checked') &&
     ![...document.querySelectorAll("audio")].some((a) => !a.paused)
   )
     refresh();

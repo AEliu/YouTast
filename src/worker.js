@@ -1,4 +1,5 @@
 import {previewTaskAction,applyTaskAction} from './task-actions.js';
+import {deleteSelectedAudio} from './audio-actions.js';
 import {windowCte} from './window-query.js';
 import {audioMedia} from './audio.js';
 import {channelDetail} from './channel-detail.js';
@@ -286,7 +287,7 @@ async function cleanupObjects(env, owner = null) {
   }
 }
 
-async function api(request, env, url) {
+async function api(request, env, url, ctx) {
   const path = url.pathname,
     method = request.method;
   if (path.startsWith("/api/executor/")) return executorApi(request, env, url);
@@ -710,6 +711,14 @@ async function api(request, env, url) {
     requireValue(result.some(r=>r.meta.changes>0),409,'音频仍可用或任务已在处理中');
     return json({ok:true});
   }
+  if(path==='/api/episodes/bulk-delete' && method==='POST') {
+    const result=await deleteSelectedAudio(env,user,await body(request));
+    if(result.changed) {
+      const cleanup=cleanupObjects(env,user.id);
+      if(ctx?.waitUntil)ctx.waitUntil(cleanup); else await cleanup;
+    }
+    return json(result);
+  }
   const epRoute = path.match(/^\/api\/episodes\/([\w-]+)$/);
   if (epRoute && method === "DELETE") {
     const e = await stmt(
@@ -736,7 +745,8 @@ async function api(request, env, url) {
     // D1 changes also includes GC trigger writes; RETURNING identifies the
     // episode update itself without mistaking a successful delete for a 409.
     requireValue(removed[0].results.length === 1, 409, "请等待转码完成");
-    await cleanupObjects(env, user.id);
+    const cleanup=cleanupObjects(env,user.id);
+    if(ctx?.waitUntil)ctx.waitUntil(cleanup); else await cleanup;
     return json({ ok: true });
   }
   throw new HttpError(404, "接口不存在");
@@ -1275,12 +1285,12 @@ async function feed(request, env, url) {
   return new Response(object?.body || null, { status, headers });
 }
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
       let response;
       if (url.pathname.startsWith("/api/"))
-        response = await api(request, env, url);
+        response = await api(request, env, url, ctx);
       else if(url.pathname.startsWith('/subscribe/')) {
         requireValue(['GET','HEAD'].includes(request.method),405,'方法不支持');
         const token=url.pathname.match(/^\/subscribe\/([a-f0-9]{64})$/)?.[1];
