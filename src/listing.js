@@ -15,6 +15,11 @@ export function listOptions(url) {
 // The visible CTE and the total query are executed in one batch snapshot.
 export const pageSql=`LIMIT ? OFFSET CASE WHEN ? >= (SELECT COUNT(*) FROM visible) THEN MAX(0,CAST(((SELECT COUNT(*) FROM visible)-1)/? AS INTEGER))*? ELSE ? END`;
 export const pageBindings=({offset,limit})=>[limit,offset,limit,limit,offset];
+// D1 rejects the nested window CTE when it is referenced again from OFFSET.
+// Run that page with a plain offset and re-read only if the requested page has
+// moved beyond the end of the list.
+export const windowPageSql='LIMIT ? OFFSET ?';
+export const windowPageBindings=({offset,limit})=>[limit,offset];
 export function pageInfo({offset,limit},total) {
  const current=total===0?0:offset>=total?Math.floor((total-1)/limit)*limit:offset;
  return {offset:current,limit,total,hasMore:current+limit<total};
@@ -43,10 +48,14 @@ export async function userCollection(env,user,url,kind) {
   base=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,j.channel_id,c.title channel_title,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.user_id=? AND c.user_id=? AND ${taskCondition(tasks)} AND ${search.sql}`;
   values=[user.id,user.id,...search.values];
  }
+ const pageQuery=offset=>env.DB.prepare(`${prefix} visible AS(${base}) SELECT *${kind==='episodes'?",(SELECT dismissed_at FROM jobs WHERE episode_id=visible.id AND kind='transcode') task_dismissed":''} FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${kind==='episodes'?windowPageSql:pageSql}`).bind(...values,...(kind==='episodes'?windowPageBindings({...options,offset}):pageBindings(options)));
  const results=await env.DB.batch([
   env.DB.prepare(`${prefix} visible AS(${base}) SELECT COUNT(*) total${kind==='jobs'?",COALESCE(SUM(display_status='failed'),0) failed_total":''} FROM visible`).bind(...values),
-  env.DB.prepare(`${prefix} visible AS(${base}) SELECT *${kind==='episodes'?",(SELECT dismissed_at FROM jobs WHERE episode_id=visible.id AND kind='transcode') task_dismissed":''} FROM visible ORDER BY created_at DESC,id ${kind==='jobs'?'DESC':'ASC'} ${pageSql}`).bind(...values,...pageBindings(options)),
+  pageQuery(options.offset),
   ...(kind==='jobs'?[env.DB.prepare(`SELECT ${taskCountsSql()} FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE j.user_id=? AND c.user_id=?`).bind(user.id,user.id)]:[]),
  ]);
- return {[kind]:results[1].results,page:pageInfo(options,results[0].results[0].total),query,...(kind==='jobs'?{tasks,failedTotal:results[0].results[0].failed_total,counts:results[2].results[0]}:{})};
+ const page=pageInfo(options,results[0].results[0].total);
+ const rows=kind==='episodes'&&page.total>0&&page.offset!==options.offset
+  ?(await env.DB.batch([pageQuery(page.offset)]))[0].results:results[1].results;
+ return {[kind]:rows,page,query,...(kind==='jobs'?{tasks,failedTotal:results[0].results[0].failed_total,counts:results[2].results[0]}:{})};
 }

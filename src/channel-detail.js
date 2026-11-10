@@ -3,7 +3,7 @@ import {taskView,taskCondition,taskStateSql,taskCountsSql} from './task-view.js'
 import {windowCte} from './window-query.js';
 import {requireValue} from './lib.js';
 import {effectiveSortMode,episodeOrderSql} from './sorting.js';
-import {listOptions,pageSql,pageBindings,pageInfo,episodeSearch} from './listing.js';
+import {listOptions,pageSql,pageBindings,windowPageSql,windowPageBindings,pageInfo,episodeSearch} from './listing.js';
 
 export async function channelDetail(env,channel,url) {
  const tab=url.searchParams.get('tab')||'episodes';
@@ -15,6 +15,7 @@ export async function channelDetail(env,channel,url) {
  const filter=tab==='archive'?`NOT (${visible}) AND object_key IS NOT NULL`:visible;
  const search=episodeSearch(query,'e');
  const rows=`SELECT e.* FROM episodes e WHERE channel_id=? AND ${filter} AND ${search.sql}`;
+ let episodePage;
  const queries=[
   env.DB.prepare(`${window} SELECT COUNT(*) episodes,COALESCE(SUM(object_key IS NOT NULL),0) ready FROM episodes WHERE channel_id=? AND ${visible}`).bind(channel.id,channel.id,channel.id),
   env.DB.prepare(`${window} SELECT COUNT(*) archived FROM episodes WHERE channel_id=? AND NOT (${visible}) AND object_key IS NOT NULL`).bind(channel.id,channel.id,channel.id),
@@ -25,7 +26,8 @@ export async function channelDetail(env,channel,url) {
   // Calculate the missing-date fallback before filtering so search preserves
   // the channel's ordering even when only some author rows match.
   const ranked=`${window}, all_visible AS(SELECT * FROM episodes WHERE channel_id=? AND ${filter}),ranked AS(SELECT *,MAX(CASE WHEN source_kind='author' AND published_at IS NULL THEN 1 ELSE 0 END) OVER(PARTITION BY source_order) AS missing_author_dates FROM all_visible),visible AS(SELECT e.* FROM ranked e WHERE ${search.sql})`;
-  queries.push(env.DB.prepare(`${ranked} SELECT *,(SELECT dismissed_at FROM jobs WHERE episode_id=visible.id AND kind='transcode') task_dismissed FROM visible ORDER BY ${episodeOrderSql(effectiveSortMode(channel))} ${pageSql}`).bind(channel.id,channel.id,channel.id,...search.values,...pageBindings(options)));
+  episodePage=offset=>env.DB.prepare(`${ranked} SELECT *,(SELECT dismissed_at FROM jobs WHERE episode_id=visible.id AND kind='transcode') task_dismissed FROM visible ORDER BY ${episodeOrderSql(effectiveSortMode(channel))} ${windowPageSql}`).bind(channel.id,channel.id,channel.id,...search.values,...windowPageBindings({...options,offset}));
+  queries.push(episodePage(options.offset));
   queries.push(env.DB.prepare(`${window}, visible AS(${rows}) SELECT COUNT(*) total FROM visible`).bind(channel.id,channel.id,channel.id,...search.values));
  }
  if(tab==='jobs'){
@@ -39,7 +41,10 @@ export async function channelDetail(env,channel,url) {
  const counts={...result[0].results[0],...result[1].results[0],...result[2].results[0]};
  const sources=result[3].results;
  const total=tab==='sources'?sources.length:result[5].results[0].total;
+ const page=tab==='sources'?{offset:0,limit:options.limit,total,hasMore:false}:pageInfo(options,total);
+ const episodes=episodePage&&page.total>0&&page.offset!==options.offset
+  ?(await env.DB.batch([episodePage(page.offset)]))[0].results:episodePage?result[4].results:[];
  return {channel:{...channel,episode_count:counts.ready,archived_count:counts.archived},counts,sources,
-  episodes:['episodes','archive'].includes(tab)?result[4].results:[],jobs:tab==='jobs'?result[4].results:[],
-  tab,...(tab==='jobs'?{tasks,failedTotal:result[5].results[0].failed_total}:{}),query:tab==='sources'?'':query,page:tab==='sources'?{offset:0,limit:options.limit,total,hasMore:false}:pageInfo(options,total)};
+  episodes,jobs:tab==='jobs'?result[4].results:[],
+  tab,...(tab==='jobs'?{tasks,failedTotal:result[5].results[0].failed_total}:{}),query:tab==='sources'?'':query,page};
 }
