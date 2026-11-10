@@ -14,6 +14,31 @@ spec.loader.exec_module(updater)
 
 
 class UpdateTest(unittest.TestCase):
+    def test_downloaded_package_cannot_replace_root_updater(self):
+        self.assertNotIn('scripts/vps-auto-update.py', updater.FILES.values())
+
+    def test_changed_dependencies_stop_before_draining(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'config'
+            config.write_text('YOUTAST_URL=https://example.com\n', encoding='utf-8')
+            archive_data = io.BytesIO()
+            with zipfile.ZipFile(archive_data, 'w') as archive:
+                for source, target in updater.FILES.items():
+                    dest = root / target
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(b'old')
+                    archive.writestr('youtast-executor/' + source, b'changed' if target == 'requirements.txt' else b'old')
+            package = archive_data.getvalue()
+            checksum = hashlib.sha256(package).hexdigest().encode() + b'  package\n'
+            with patch.object(updater, 'ROOT', root), patch.object(updater, 'CONFIG', config), \
+                 patch.object(updater, 'fetch', side_effect=[checksum, package]), \
+                 patch.object(updater, 'command') as command, \
+                 patch.object(updater.os, 'geteuid', return_value=0, create=True):
+                with self.assertRaisesRegex(RuntimeError, 'Dependencies changed'):
+                    updater.main()
+                command.assert_not_called()
+
     def test_verified_package_drains_before_replacing_running_code(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -8,4 +8,6 @@ Cloudflare Workers Builds 连接本仓库的生产分支；构建先运行语法
 
 VPS 的 `youtast-auto-update.timer` 定期下载已发布的执行器 ZIP 和校验和，验证后停止领取任务并等待运行中的任务完成，再更新服务。YouTube cookies 和执行器密钥只留在 VPS。应用站点和校验和由同一来源发布，校验可以发现传输错误，不能抵御发布权限被滥用。更新状态通过 `systemctl status youtast-auto-update.service` 和 `journalctl -u youtast-auto-update.service` 检查。
 
+更新器以 root 安装程序，但下载的执行器仅以 `youtast` 用户运行；更新器自身不会从下载包自动替换，也不会以 root 执行下载包的依赖安装。依赖清单发生变化时更新器会暂停更新并记录原因，需要操作员先在 VPS 上审核并更新依赖及清单，再重试。
+
 安装前，首次手动升级到支持 SIGUSR1 排空的执行器；旧执行器不支持该信号。安装 `deploy/youtast-auto-update.service` 和 `.timer` 到 systemd，安装 `scripts/vps-auto-update.py` 到 `/opt/youtast/scripts/`，再运行 `systemctl daemon-reload` 和 `systemctl enable --now youtast-auto-update.timer`。确认服务状态及心跳。回滚前暂停定时器，否则它会再次安装当前发布版本。

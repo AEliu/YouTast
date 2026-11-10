@@ -8,7 +8,6 @@ import hashlib
 import io
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time
@@ -22,8 +21,7 @@ PACKAGE = 'youtast-executor-0.1.0.zip'
 FILES = {'agent.py': 'executor/agent.py', 'requirements.txt': 'requirements.txt',
          'requirements-pot.txt': 'requirements-pot.txt',
          'scripts/windows-runner.py': 'scripts/windows-runner.py',
-         'scripts/windows-cleanup.py': 'scripts/windows-cleanup.py',
-         'scripts/vps-auto-update.py': 'scripts/vps-auto-update.py'}
+         'scripts/windows-cleanup.py': 'scripts/windows-cleanup.py'}
 
 
 def command(*args, **kwargs):
@@ -67,6 +65,12 @@ def main():
     if all((ROOT / name).is_file() and (ROOT / name).read_bytes() == data for name, data in files.items()):
         print('Executor is current')
         return
+    # The package is hosted on the same origin as its hash.  Never run a
+    # downloaded installer or replace this root-run updater automatically.
+    # Dependency changes require an operator to update the environment first.
+    for name in ('requirements.txt', 'requirements-pot.txt'):
+        if not (ROOT / name).is_file() or (ROOT / name).read_bytes() != files[name]:
+            raise RuntimeError('Dependencies changed; update the executor environment manually before retrying')
     old_agent = (ROOT / 'executor/agent.py').read_text(encoding='utf-8')
     if 'signal.SIGUSR1, lambda *_: DRAIN.set()' not in old_agent:
         raise RuntimeError('Current executor lacks drain support; bootstrap it during a confirmed idle period')
@@ -76,19 +80,9 @@ def main():
             path = stage / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
-        command('/opt/youtast/.venv/bin/python', '-m', 'py_compile', str(stage / 'executor/agent.py'), str(stage / 'scripts/windows-runner.py'), str(stage / 'scripts/windows-cleanup.py'), str(stage / 'scripts/vps-auto-update.py'))
-        requirements_changed = any(not (ROOT / name).exists() or (ROOT / name).read_bytes() != files[name] for name in ('requirements.txt', 'requirements-pot.txt'))
-        if requirements_changed:
-            # Build a separate environment while the current executor remains running.
-            command('/usr/bin/python3', '-m', 'venv', str(stage / 'venv'))
-            command(str(stage / 'venv/bin/python'), '-m', 'pip', 'install', '-r', str(stage / 'requirements.txt'))
-            if config.get('YOUTAST_POT_PROVIDER_HOME'):
-                command(str(stage / 'venv/bin/python'), '-m', 'pip', 'install', '-r', str(stage / 'requirements-pot.txt'))
+        command('/opt/youtast/.venv/bin/python', '-m', 'py_compile', str(stage / 'executor/agent.py'), str(stage / 'scripts/windows-runner.py'), str(stage / 'scripts/windows-cleanup.py'))
         active = subprocess.run(['systemctl', 'is-active', '--quiet', 'youtast-executor.service']).returncode == 0
         backups = {}
-        venv_backup = ROOT / '.venv.auto-update-previous'
-        if venv_backup.exists():
-            raise RuntimeError('Previous environment backup exists; inspect before updating')
         try:
             if active:
                 print('Draining executor; waiting for active jobs', flush=True)
@@ -102,9 +96,6 @@ def main():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(stage / name, dest)
                 dest.chmod(0o644)
-            if requirements_changed:
-                os.rename(ROOT / '.venv', venv_backup)
-                os.rename(stage / 'venv', ROOT / '.venv')
             if active:
                 command('systemctl', 'start', 'youtast-executor.service')
                 time.sleep(5)
@@ -116,15 +107,9 @@ def main():
                     dest.unlink(missing_ok=True)
                 else:
                     dest.write_bytes(data)
-            if venv_backup.exists():
-                if (ROOT / '.venv').exists():
-                    shutil.rmtree(ROOT / '.venv')
-                os.rename(venv_backup, ROOT / '.venv')
             if active:
                 subprocess.run(['systemctl', 'start', 'youtast-executor.service'], check=False)
             raise
-        if venv_backup.exists():
-            shutil.rmtree(venv_backup)
     print('Executor updated and restarted' if active else 'Executor updated; service was inactive')
 
 
