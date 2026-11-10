@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import sys
+import tempfile
+import shutil
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -54,6 +56,20 @@ def main():
         sys.executable = str(Path(sys.executable).with_name("python.exe"))
     log = RotatingFileHandler(state_dir / "executor.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[log], force=True)
+    # The cleanup task locks each session before touching it, so even a long
+    # running conversion is protected. tempfile only affects this process.
+    temp_root = state_dir / 'temp'
+    temp_root.mkdir(exist_ok=True)
+    session = Path(tempfile.mkdtemp(prefix='session-', dir=temp_root))
+    session_lock = (session / '.lock').open('w+b')
+    session_lock.write(b'0')
+    session_lock.flush()
+    session_lock.seek(0)
+    if os.name == 'nt':
+        msvcrt.locking(session_lock.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(session_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    tempfile.tempdir = str(session)
     state = {"pid": os.getpid(), "started_at": int(time.time()), "config": str(args.config.resolve()), "status": "running"}
     state_file = state_dir / "process.json"
     state_file.write_text(json.dumps(state), encoding="utf-8")
@@ -66,6 +82,8 @@ def main():
         state["status"] = "stopped"
         state["stopped_at"] = int(time.time())
         state_file.write_text(json.dumps(state), encoding="utf-8")
+        session_lock.close()
+        shutil.rmtree(session, ignore_errors=True)
         log.close()
         lock.close()
 

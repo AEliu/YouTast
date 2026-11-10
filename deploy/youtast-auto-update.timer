@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for deployed YouTast executor updates
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -32,3 +32,10 @@ test('camera QR decoder recovers the exact HTTPS subscription URL for each clien
     assert.equal(decoded?.data,links.page);
   }
 });
+
+
+test('subscription page warns only when the active feed has no audio',()=>{
+  const channel={title:'Channel',feed_token:'c'.repeat(64)};
+  assert.match(subscriptionPage({...channel,has_audio:0},'https://example.com','apple'),/暂无可用音频/);
+  assert.doesNotMatch(subscriptionPage({...channel,has_audio:1},'https://example.com','apple'),/暂无可用音频/);
+});

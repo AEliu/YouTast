@@ -903,6 +903,12 @@ async function executorApi(request, env, url) {
   }
   if (m[2] === "fail") {
     const b = await body(request);
+    if(b.skip_paid===true) {
+      requireValue(job.kind==='transcode',409,'仅音频任务可跳过会员视频');
+      const result=await stmt(env,"UPDATE jobs SET status='failed',error='会员或付费专享视频已跳过',lease_token=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE id=? AND lease_token=? AND status='running' AND lease_until>?",t,job.id,lease,t).run();
+      requireValue(result.meta.changes===1,409,'任务租约已失效');
+      return json({ok:true,skipped:true});
+    }
     if(b.defer_replay===true) {
       requireValue(job.kind==='transcode',409,'仅音频任务可等待回放');
       const preferences=await stmt(env,'SELECT sync_hours FROM channel_preferences WHERE id=?',job.channel_id).first();
@@ -1062,7 +1068,13 @@ async function executorApi(request, env, url) {
     if(active&&!uploading)await makeSpace(env,job.user_id,bytes,cleanupObjects,allStorageBytes,userStorageBytes);
     reserved=await reserve();
   }
-  requireValue(reserved, 409, "存储额度不足或该任务正在上传");
+  if (!reserved) {
+    const active = await stmt(env,"SELECT id FROM jobs WHERE id=? AND lease_token=? AND status='running' AND lease_until>?",job.id,lease,now()).first();
+    requireValue(active,409,"上传时租约失效，请重试");
+    const uploading = await stmt(env,'SELECT object_key FROM object_gc WHERE object_key=?',key).first();
+    requireValue(!uploading,409,"该任务正在上传，请稍后重试");
+    requireValue(false,409,"存储空间不足，请清理音频或联系管理员调整用户或站点存储额度后重试");
+  }
   const uploadAbort = new AbortController();
   const uploadDeadline = setTimeout(
     () => uploadAbort.abort(new Error("音频上传超时")),
@@ -1273,7 +1285,7 @@ export default {
         requireValue(['GET','HEAD'].includes(request.method),405,'方法不支持');
         const token=url.pathname.match(/^\/subscribe\/([a-f0-9]{64})$/)?.[1];
         requireValue(token,404,'订阅链接无效或已失效');
-        const channel=await stmt(env,'SELECT c.title,c.feed_token FROM channels c JOIN users u ON u.id=c.user_id WHERE c.feed_token=? AND u.disabled=0',token).first();
+        const channel=await stmt(env,'SELECT c.title,c.feed_token,EXISTS(SELECT 1 FROM episodes e WHERE e.channel_id=c.id AND e.object_key IS NOT NULL AND e.id IN(SELECT id FROM active_episode_window)) AS has_audio FROM channels c JOIN users u ON u.id=c.user_id WHERE c.feed_token=? AND u.disabled=0',token).first();
         requireValue(channel,404,'订阅链接无效或已失效');
         response=new Response(request.method==='HEAD'?null:subscriptionPage(channel,url.origin,url.searchParams.get('client')),{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow, noarchive'}});
       }

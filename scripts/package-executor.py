@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 root = Path(__file__).resolve().parents[1]
 source = root / "executor"
 files = ["agent.py", "requirements.txt", "requirements-pot.txt", "Dockerfile", "compose.yaml", "README.md", ".env.example"]
-script_files = ["windows-executor.ps1", "windows-runner.py"]
+script_files = ["windows-executor.ps1", "windows-runner.py", "windows-cleanup.py", "install-windows-cleanup.ps1", "vps-auto-update.py"]
 example = (source / ".env.example").read_text(encoding="utf-8")
 settings = dict(line.split("=", 1) for line in example.splitlines() if line.strip() and not line.lstrip().startswith("#"))
 url = urlsplit(settings.get("YOUTAST_URL", ""))

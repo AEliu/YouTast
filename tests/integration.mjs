@@ -57,6 +57,10 @@ test("Full local flow: privacy, competing executors, leases, audio ranges, rotat
   });
   assert.equal(r.status, 201);
   const cid = (await r.json()).id;
+  const emptyDashboard = await (await request('/api/dashboard', {cookie: alice})).json();
+  const emptyToken = emptyDashboard.channels.find(c => c.id === cid).feed_token;
+  const emptyPage = await (await request(`/subscribe/${emptyToken}`)).text();
+  assert.match(emptyPage, /暂无可用音频/);
   r = await request(`/api/channels/${cid}/sources`, {
     cookie: bob,
     method: "POST",
@@ -187,6 +191,7 @@ test("Full local flow: privacy, competing executors, leases, audio ranges, rotat
   const subscribe=await r.text();
   assert.ok(subscribe.includes('Integration &amp; &lt;private&gt;'));
   assert.ok(subscribe.includes('value="overcast" selected'));
+  assert.doesNotMatch(subscribe, /暂无可用音频/);
   assert.ok(subscribe.includes('overcast://x-callback-url/add?url='));
   assert.equal((await request(`/subscribe/${feedToken}`,{method:'HEAD'})).status,200);
   assert.equal((await request('/subscribe/not-a-token')).status,404);

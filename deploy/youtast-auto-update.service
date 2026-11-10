@@ -1,0 +1,9 @@
+[Unit]
+Description=Update YouTast executor after running jobs finish
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/youtast/.venv/bin/python /opt/youtast/scripts/vps-auto-update.py
+TimeoutStartSec=infinity

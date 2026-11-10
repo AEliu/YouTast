@@ -23,6 +23,7 @@ from pathlib import Path
 
 LOG = logging.getLogger("youtast")
 STOP = threading.Event()
+DRAIN = threading.Event()
 VIDEO_ID = re.compile(r"^[\w-]{11}$", re.ASCII)
 
 
@@ -125,6 +126,26 @@ def downloader_failure(diagnostic):
     if "video unavailable" in message or "private video" in message:
         return "This YouTube video is unavailable or private for the configured session"
     return "yt-dlp failed; inspect executor logs and update yt-dlp/JS runtime"
+
+
+def job_error_message(exc):
+    """Expose only known server messages; never forward arbitrary response bodies or URLs."""
+    if isinstance(exc, urllib.error.HTTPError):
+        allowed = {
+            "存储空间不足，请清理音频或联系管理员调整用户或站点存储额度后重试",
+            "存储额度不足或该任务正在上传",
+            "该任务正在上传，请稍后重试",
+            "上传时租约失效，请重试",
+        }
+        try:
+            body = json.loads(exc.read(4096))
+            message = body.get("error") if isinstance(body, dict) else None
+            if exc.code == 409 and isinstance(message, str) and message in allowed:
+                return message
+        except (ValueError, UnicodeError, OSError):
+            pass
+        return f"服务器请求失败（HTTP {exc.code}），请查看执行器和服务端状态"
+    return str(exc) if type(exc) in (RuntimeError, ValueError) else f"{type(exc).__name__}: processing or upload failed"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -275,19 +296,32 @@ class NoReplayTab(RuntimeError):
     pass
 
 
+class PaidVideoSkipped(RuntimeError):
+    pass
+
+
+PAID_AVAILABILITY = ('subscriber_only', 'premium_only')
+
+
 def run_audio_download(args,cwd,lost):
     # Observe status before yt-dlp's filters/format selection, using the same
     # extraction request. No extra per-video preflight request is required.
     at=args.index('--')
-    args[at:at]=['--ignore-no-formats-error','--no-simulate','--print-to-file','pre_process:%(live_status)s','replay-state.txt']
+    args[at:at]=['--ignore-no-formats-error','--no-simulate','--print-to-file','pre_process:%(live_status)s','replay-state.txt',
+                 '--print-to-file','pre_process:%(availability)s','availability.txt']
     def pending():
         path=cwd/'replay-state.txt'
         return path.is_file() and any(s.strip() in ('is_live','is_upcoming','post_live') for s in path.read_text(encoding='utf-8').splitlines())
+    def paid():
+        path=cwd/'availability.txt'
+        return path.is_file() and any(s.strip() in PAID_AVAILABILITY for s in path.read_text(encoding='utf-8').splitlines())
     try:
         run_command(args,cwd,lost,'download.log')
     except RuntimeError:
+        if paid():raise PaidVideoSkipped('会员或付费专享视频已跳过')
         if pending():raise ReplayPending('Live replay is not ready')
         raise
+    if paid():raise PaidVideoSkipped('会员或付费专享视频已跳过')
     if pending():raise ReplayPending('Live replay is not ready')
 
 
@@ -305,7 +339,7 @@ def playlist_batch(api, path, lease, metadata, entries):
         if not isinstance(entry, dict):
             continue
         video_id = entry.get('id', '')
-        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id) or video_id in available or entry.get('is_live') or entry.get('live_status') in ('is_live', 'is_upcoming', 'post_live') or entry.get('availability') == 'private':
+        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id) or video_id in available or entry.get('is_live') or entry.get('live_status') in ('is_live', 'is_upcoming', 'post_live') or entry.get('availability') in ('private', *PAID_AVAILABILITY):
             continue
         items.append({'id': video_id, 'position': position})
         available[video_id] = (position, entry)
@@ -381,7 +415,7 @@ def process_job(api, job):
                     entries=[(position,entry) for position,entry in enumerate(entries[:scan_limit],1)]
                 results = []
                 for position, entry in entries:
-                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live") or entry.get('availability') in PAID_AVAILABILITY:
                         continue
                     # Flat stream lists may omit status. A finite duration is
                     # required before accepting an archive; recheck next sync.
@@ -406,6 +440,7 @@ def process_job(api, job):
                     api.post(path + '/metadata', {'metadata':{**video_metadata(meta),'text_language':text_language,'complete':True},'title':str(meta.get('title') or video_id)[:300],'published_at':publication_time(meta),'complete_job':True},lease=job['leaseToken'])
                     return
                 max_duration = min(10800, int(89_000_000 * 8 / (bitrate * 1000)))
+                download_filter = f'duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming & availability !=? subscriber_only & availability !=? premium_only'
                 # Embedded ID3 chapters also work for private RSS and older clients
                 # which do not consume the external Podcasting 2.0 chapter file.
                 if m4a:
@@ -413,7 +448,7 @@ def process_job(api, job):
                     # localized text cannot select a different language audio track.
                     sorting=['--format-sort','lang,acodec:m4a'] if mode=='source' else []
                     args=common+['--no-playlist','--format',selection,*sorting,'--max-filesize','250M',
-                        '--match-filters',f'duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming','--write-info-json',
+                        '--match-filters',download_filter,'--write-info-json',
                         '--print-to-file','after_move:filepath','download-path.txt','--output','source.%(ext)s',
                         '--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0),
                         '--',f'https://www.youtube.com/watch?v={video_id}']
@@ -427,7 +462,7 @@ def process_job(api, job):
                     meta=json.loads(info.read_text(encoding='utf-8'))
                     audio,actual_duration=prepare_m4a(source,cwd,lost,bitrate,mode,meta)
                 else:
-                    args = common + ["--no-playlist", "--format", selection, "--extract-audio", "--audio-format", "mp3", "--audio-quality", f"{bitrate}K", "--embed-chapters", "--postprocessor-args", "Metadata+ffmpeg_o:-id3v2_version 3", "--max-filesize", "250M", "--match-filters", f"duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming", "--write-info-json", "--output", "audio.%(ext)s", "--", f"https://www.youtube.com/watch?v={video_id}"]
+                    args = common + ["--no-playlist", "--format", selection, "--extract-audio", "--audio-format", "mp3", "--audio-quality", f"{bitrate}K", "--embed-chapters", "--postprocessor-args", "Metadata+ffmpeg_o:-id3v2_version 3", "--max-filesize", "250M", "--match-filters", download_filter, "--write-info-json", "--output", "audio.%(ext)s", "--", f"https://www.youtube.com/watch?v={video_id}"]
                     args[args.index('--'):args.index('--')] = ['--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0)]
                     run_audio_download(args,cwd,lost)
                     audio = cwd / "audio.mp3"
@@ -439,6 +474,13 @@ def process_job(api, job):
                     raise RuntimeError("Lease lost before upload")
                 api.post(path + '/metadata', {'metadata': {**video_metadata(meta),'text_language':text_language,'complete':True},'title':str(meta.get('title') or video_id)[:300]}, lease=job['leaseToken'])
                 api.post(path + "/audio", lease=job["leaseToken"], audio=audio, duration=actual_duration, published_at=publication_time(meta))
+    except PaidVideoSkipped:
+        if not lost.is_set():
+            try:
+                api.post(path+'/fail',{'skip_paid':True},lease=job['leaseToken'])
+                LOG.info('Paid or members-only video skipped')
+            except Exception:
+                LOG.warning('Could not report skipped video; lease expiry will recover the job')
     except ReplayPending:
         if not lost.is_set():
             try:
@@ -448,7 +490,7 @@ def process_job(api, job):
                 LOG.warning('Could not defer replay; lease expiry will recover the job')
     except Exception as exc:
         # Detailed third-party exception strings may include local secrets; send only controlled messages.
-        message = str(exc) if type(exc) in (RuntimeError, ValueError) else f"{type(exc).__name__}: processing or upload failed"
+        message = job_error_message(exc)
         LOG.warning("Job %s failed: %s", job["id"], message)
         if not lost.is_set():
             try:
@@ -468,13 +510,16 @@ def main():
     api = API(url, token)
     for name in ("SIGINT", "SIGTERM"):
         signal.signal(getattr(signal, name), lambda *_: STOP.set())
+    if hasattr(signal, 'SIGUSR1'):
+        # Stop claiming new work while letting active jobs finish normally.
+        signal.signal(signal.SIGUSR1, lambda *_: DRAIN.set())
     idle = 60
     LOG.info("Executor started; waiting for tasks")
     if os.environ.get("YOUTAST_POT_PROVIDER_HOME"):
         LOG.info("Local PO Token provider configured for YouTube downloads")
     running,capacity,next_claim,wake_on_finish=set(),1,0,False
     with concurrent.futures.ThreadPoolExecutor(max_workers=3,thread_name_prefix='youtast-job') as pool:
-        while not STOP.is_set():
+        while not STOP.is_set() and not DRAIN.is_set():
             previous=len(running)
             running={future for future in running if not future.done()}
             if len(running)<previous and wake_on_finish:next_claim=min(next_claim,time.monotonic())

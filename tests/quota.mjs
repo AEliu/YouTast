@@ -72,7 +72,7 @@ test("Concurrent uploads cannot overbook the 50-byte isolated test quota", async
         async (r) => (await (await r).json()).job,
       ),
     );
-    const statuses = await Promise.all(
+    const responses = await Promise.all(
       jobs.map(
         async (j) =>
           (
@@ -86,10 +86,11 @@ test("Concurrent uploads cannot overbook the 50-byte isolated test quota", async
               },
               body: Buffer.alloc(32, 65),
             })
-          ).status,
+          ),
       ),
     );
-    assert.deepEqual(statuses.sort(), [200, 409]);
+    assert.deepEqual(responses.map(r => r.status).sort(), [200, 409]);
+    assert.match((await responses.find(r => r.status === 409).json()).error, /存储空间不足/);
     r = await fetch(origin + "/api/dashboard", { headers: { Cookie: cookie } });
     assert.equal((await r.json()).bytes, 32);
   } finally {

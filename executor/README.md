@@ -56,6 +56,8 @@ $env:YOUTAST_TOKEN = [System.Net.NetworkCredential]::new('', $executorSecret).Pa
 
 不使用 Docker 时，`.env` 不会自动读取，请按上面的命令设置环境变量。环境变量只在当前终端会话中有效；关闭终端或按 Ctrl+C 会停止执行器，重新启动时需要重新设置变量。长期运行可由机器管理员配置系统服务。在应用「执行器」页面查看机器的报到状态。
 
+Debian VPS 的 systemd 部署、私有 cookies 配置和定期清理步骤见仓库内的 [VPS 执行器部署指南](../docs/VPS-EXECUTOR.md)。该指南不包含在独立执行器 ZIP 中。
+
 ### Windows 开机自动启动
 
 在解压目录安装上述依赖，并在 PowerShell 中创建虚拟环境（ZIP 中依赖文件位于根目录）：
@@ -88,6 +90,8 @@ Get-Content .wrangler\windows-executor\executor.log -Tail 50
 `-Boot` 注册开机触发任务并立即启动，以 SYSTEM 账户运行，无需用户登录。注册失败会报错；停止和移除任务也需要管理员权限。在应用中查看报到状态，重启后可查看日志确认启动。SYSTEM 必须能读取安装目录、Python、配置和可选 cookies，并能写入日志目录；不要放在 SYSTEM 无法访问的位置或用户网络盘。SYSTEM 的 PATH 可能与当前用户不同，确保 FFmpeg、FFprobe 和 Node/Deno 在系统 PATH，或在配置中添加 `PATH=完整搜索路径`。如果机器使用代理，也可在配置中添加 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`。配置文件包含密钥，应限制访问。
 
 不带 `-Boot` 的启动命令使用当前用户登录触发；如果注册失败，仅在当前会话启动隐藏进程。不要将登录启动误认为开机启动。
+
+Windows 清理任务每 6 小时检查本机执行器缓存和临时目录：缓存超过 7 天的文件会删除，超过 256 MiB 时优先删除最旧文件；不足 24 小时的缓存不删除，因此容量限制不是硬上限。任务临时音频正常结束时删除；异常退出留下的专用临时目录在至少 24 小时后清理。锁保护正在运行的执行器临时目录。清理不涉及云端音频或手动保存的测试文件。设置任务请运行 `scripts\install-windows-cleanup.ps1`。
 
 ## 运行说明
 
