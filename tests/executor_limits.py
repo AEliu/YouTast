@@ -1,12 +1,44 @@
 """Quota-aware retry behavior must not repeatedly call an exhausted Worker."""
 import io
+import threading
 import sys
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "executor"))
 from agent import claim_retry_delay, job_error_message
+import agent
+
+
+class StartIntervalTest(unittest.TestCase):
+    def test_executor_claims_again_at_explicit_server_delay(self):
+        stop = threading.Event()
+        elapsed = [0]
+        polls = []
+
+        def advance(duration):
+            elapsed[0] += duration
+
+        class API:
+            def __init__(self, *_):
+                pass
+
+            def post(self, path):
+                polls.append((path, elapsed[0]))
+                if len(polls) == 1:
+                    return {'job': None, 'retryAfter': 4, 'retryReason': 'start_interval'}
+                stop.set()
+                return {'job': None}
+
+        with patch.dict(agent.os.environ, {'YOUTAST_URL': 'https://example.com', 'YOUTAST_TOKEN': 'fixture'}), \
+             patch.object(agent, 'API', API), patch.object(agent, 'STOP', stop), \
+             patch.object(agent, 'DRAIN', threading.Event()), patch.object(stop, 'wait', side_effect=advance), \
+             patch.object(agent.time, 'monotonic', side_effect=lambda: elapsed[0]), patch.object(agent.signal, 'signal'):
+            agent.main()
+
+        self.assertEqual(polls, [('/api/executor/claim', 0), ('/api/executor/claim', 4)])
 
 
 class QuotaDelayTest(unittest.TestCase):

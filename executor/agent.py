@@ -537,7 +537,12 @@ def main():
                     wake_on_finish=True
                     next_claim=time.monotonic()+(60 if len(running)>=capacity else 0)
                     continue
-                delay=max(15,result.get('retryAfter',60))
+                retry_after=result.get('retryAfter',60)
+                if result.get('retryReason')=='start_interval':
+                    wake_on_finish=False
+                    next_claim=time.monotonic()+max(1,retry_after)
+                    continue
+                delay=max(15,retry_after)
                 blocked=result.get('execution',{}).get('paused') or result.get('execution',{}).get('cooldown_until',0)>time.time()
                 wake_on_finish=not blocked
                 if running and len(running)>=capacity:delay=max(60,delay)

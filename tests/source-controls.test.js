@@ -3,13 +3,25 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFile,readdir} from 'node:fs/promises';
 import {validateSourceControls} from '../src/source-controls.js';
+import worker from '../src/worker.js';
 import {outsideDialog} from '../public/dialog-ui.js';
 
 test('source limits validate strict integers and pause flags; dialog backdrop excludes padding',()=>{
  assert.deepEqual(validateSourceControls({latest_limit:2,paused:false}),{latest_limit:2,paused:false});
- for(const bad of [{},{latest_limit:-1},{latest_limit:101},{latest_limit:2.5},{latest_limit:'2'},{paused:1},{role:'admin'},null])assert.throws(()=>validateSourceControls(bad));
+ assert.deepEqual(validateSourceControls({sync_minutes:15}),{sync_minutes:15});
+ assert.deepEqual(validateSourceControls({sync_minutes:null}),{sync_minutes:null});
+ for(const bad of [{},{latest_limit:-1},{latest_limit:101},{latest_limit:2.5},{latest_limit:'2'},{paused:1},{sync_minutes:14},{sync_minutes:15.5},{sync_minutes:'15'},{sync_minutes:10081},{role:'admin'},null])assert.throws(()=>validateSourceControls(bad));
  const rect={left:10,top:20,right:100,bottom:200};
  assert.equal(outsideDialog(rect,9,30),true);assert.equal(outsideDialog(rect,50,201),true);assert.equal(outsideDialog(rect,15,25),false);
+});
+
+test('intermediate five-minute Cron ticks only enqueue due source scans',async()=>{
+ const writes=[];
+ const env={DB:{prepare(query){return {bind(...params){return {run(){writes.push({query,params});}};}};}}};
+ await worker.scheduled({cron:'*/5 * * * *',scheduledTime:Date.UTC(2026,10,26,2,10)},env);
+ assert.equal(writes.length,1);
+ assert.match(writes[0].query,/INSERT OR IGNORE INTO jobs/);
+ assert.match(writes[0].query,/s\.paused=0 AND s\.next_scan<=\?/);
 });
 
 test('independent source windows union overlapping membership before the channel total; cached episodes survive',async()=>{

@@ -12,3 +12,10 @@ export async function executionPolicy(env,uid) {
  const {user_id,...policy}=row||{...EXECUTION_DEFAULTS,next_start_at:0,cooldown_until:0};
  return {...policy,paused:!!policy.paused};
 }
+
+export function claimWait(policy,t,minimum=1) {
+ if(policy.paused)return {retryAfter:60};
+ const delay=Math.max(policy.next_start_at-t,policy.cooldown_until-t);
+ if(policy.cooldown_until<=t&&policy.next_start_at>t)return {retryAfter:delay,retryReason:'start_interval'};
+ return {retryAfter:Math.max(minimum,delay)};
+}

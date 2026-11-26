@@ -8,11 +8,11 @@ import {changePassword} from './passwords.js';
 import {adminApi} from "./admin.js";
 import {subscriptionPage} from './subscribe.js';
 import {seedLegacyInvite} from './invitations.js';
-import {executionPolicy,validateExecution} from './execution.js';
+import {claimWait,executionPolicy,validateExecution} from './execution.js';
 import {reconcileWindow} from './episode-window.js';
 import {makeSpace,cleanupOverQuota} from './storage-policy.js';
 import {scanRecords} from './scan-records.js';
-import {validateSourceControls,sourceMembership,backfillSourceMembership} from './source-controls.js';
+import {validateSourceControls,sourceMembership,backfillSourceMembership,setSourceSyncInterval} from './source-controls.js';
 import {validateInventory,inventoryBatch,acknowledgeInventory} from './source-discovery.js';
 import {
   now,
@@ -222,6 +222,16 @@ function cookie(request, token, age) {
   return `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }
 
+function dueSourceScans(env,t,owner=null,sourceId=null) {
+  return stmt(env,`INSERT OR IGNORE INTO jobs(id,user_id,channel_id,source_id,kind,available_at,created_at,updated_at)
+    SELECT lower(hex(randomblob(16))),c.user_id,s.channel_id,s.id,'scan',?,?,? FROM sources s
+    JOIN channels c ON c.id=s.channel_id JOIN users u ON u.id=c.user_id
+    WHERE u.disabled=0 AND s.paused=0 AND s.next_scan<=?
+    AND (? IS NULL OR c.user_id=?) AND (? IS NULL OR s.id=?)
+    AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.source_id=s.id AND j.status IN ('queued','running'))
+    ORDER BY s.next_scan,s.id LIMIT 20`,t,t,t,t,owner,owner,sourceId,sourceId);
+}
+
 async function schedule(env, owner = null, sourceId = null) {
   const t = now();
   await env.DB.batch([
@@ -238,18 +248,7 @@ async function schedule(env, owner = null, sourceId = null) {
       t,
       t,
     ),
-    stmt(
-      env,
-      `INSERT OR IGNORE INTO jobs(id,user_id,channel_id,source_id,kind,available_at,created_at,updated_at) SELECT lower(hex(randomblob(16))),c.user_id,s.channel_id,s.id,'scan',?,?,? FROM sources s JOIN channels c ON c.id=s.channel_id JOIN users u ON u.id=c.user_id WHERE u.disabled=0 AND s.paused=0 AND s.next_scan<=? AND (? IS NULL OR c.user_id=?) AND (? IS NULL OR s.id=?) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.source_id=s.id AND j.status IN ('queued','running')) ORDER BY s.next_scan,s.id LIMIT 20`,
-      t,
-      t,
-      t,
-      t,
-      owner,
-      owner,
-      sourceId,
-      sourceId,
-    ),
+    dueSourceScans(env,t,owner,sourceId),
     stmt(env, "DELETE FROM sessions WHERE expires_at<?", t),
     stmt(env, "DELETE FROM login_limits WHERE reset_at<?", t),
     stmt(env,"DELETE FROM usage_daily WHERE day<date('now','-13 months')"),
@@ -455,11 +454,14 @@ async function api(request, env, url, ctx) {
       await schedule(env,user.id,source.id);return json({ok:true});
     }
     const controls=validateSourceControls(await body(request));
+    const hasSyncInterval=Object.hasOwn(controls,'sync_minutes'),t=now();
     const statements=[backfillSourceMembership(env,source.id),stmt(env,'UPDATE sources SET latest_limit=COALESCE(?,latest_limit),paused=COALESCE(?,paused) WHERE id=?',controls.latest_limit??null,Object.hasOwn(controls,'paused')?(controls.paused?1:0):null,source.id)];
     if(controls.paused===true)statements.push(stmt(env,"UPDATE jobs SET status='failed',error='来源已暂停',lease_token=NULL,lease_until=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE source_id=? AND kind='scan' AND status IN('queued','running')",now(),source.id));
     if(controls.paused===false)statements.push(stmt(env,'UPDATE sources SET next_scan=? WHERE id=?',now(),source.id));
+    if(hasSyncInterval)statements.push(setSourceSyncInterval(env,source.id,controls.sync_minutes,t));
     await env.DB.batch(statements);await reconcileWindow(env,channel.id);
     if(controls.paused===false)await schedule(env,user.id,source.id);
+    else if(hasSyncInterval&&(source.sync_minutes!==controls.sync_minutes))await dueSourceScans(env,t,user.id,source.id).run();
     return json({ok:true,source:await stmt(env,'SELECT * FROM sources WHERE id=?',source.id).first()});
   }
   const channelRoute = path.match(
@@ -817,8 +819,8 @@ async function executorApi(request, env, url) {
       ),
     ]);
     const policy=await executionPolicy(env,executor.user_id);
-    const delay=Math.max(0,policy.next_start_at-t,policy.cooldown_until-t);
-    if(policy.paused||delay>0)return json({job:null,retryAfter:policy.paused?60:Math.max(1,delay),execution:policy});
+    if(policy.paused||policy.next_start_at>t||policy.cooldown_until>t)
+      return json({job:null,...claimWait(policy,t),execution:policy});
     const token = secret();
     let job;
     try {job = await stmt(
@@ -859,7 +861,7 @@ async function executorApi(request, env, url) {
     ).first();}catch(error){
       if(!String(error.message).includes('execution_throttled'))throw error;
       const current=await executionPolicy(env,executor.user_id);
-      return json({job:null,retryAfter:current.paused?60:Math.max(15,current.next_start_at-t,current.cooldown_until-t),execution:current});
+      return json({job:null,...claimWait(current,t,15),execution:current});
     }
     if (!job) return json({ job: null, retryAfter: 60,execution:policy });
     const source = job.source_id
@@ -1018,11 +1020,16 @@ async function executorApi(request, env, url) {
     statements.push(
       stmt(
         env,
-        `UPDATE sources SET waiting_replay=CASE WHEN kind='video' AND ?=1 THEN 1 ELSE 0 END,next_scan=CASE WHEN kind='video' AND ?=0 THEN ? ELSE ? END WHERE id=? AND ${live}`,
+        `UPDATE sources SET waiting_replay=CASE WHEN kind='video' AND ?=1 THEN 1 ELSE 0 END,
+         next_scan=CASE WHEN kind='video' AND ?=0 THEN ? WHEN ? THEN ?+900
+          ELSE ?+60*COALESCE(sync_minutes,(SELECT sync_hours*60 FROM channel_preferences WHERE id=sources.channel_id)) END
+         WHERE id=? AND ${live}`,
         entries.length===0?1:0,
         entries.length===0?1:0,
         t + 315360000,
-        t + (inventory&&job.discovery_more?900:3600 * (await stmt(env,"SELECT sync_hours FROM channel_preferences WHERE id=?",job.channel_id).first()).sync_hours),
+        Number(inventory&&job.discovery_more),
+        t,
+        t,
         job.source_id,
         job.id,
         lease,
@@ -1349,7 +1356,11 @@ export default {
       );
     }
   },
-  async scheduled(_event, env) {
+  async scheduled(event, env) {
+    if(event.cron==='*/5 * * * *'&&Math.floor(event.scheduledTime/60000)%15!==0) {
+      await dueSourceScans(env,now()).run();
+      return;
+    }
     await schedule(env);
     await cleanupObjects(env);
     await cleanupOverQuota(env,cleanupObjects,allStorageBytes,userStorageBytes);

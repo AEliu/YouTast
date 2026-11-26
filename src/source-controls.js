@@ -1,10 +1,23 @@
 import {requireValue} from './lib.js';
 
 export function validateSourceControls(value){
- requireValue(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length>0&&Object.keys(value).every(k=>['latest_limit','paused'].includes(k)),400,'来源设置无效');
+ requireValue(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length>0&&Object.keys(value).every(k=>['latest_limit','paused','sync_minutes'].includes(k)),400,'来源设置无效');
  if(Object.hasOwn(value,'latest_limit'))requireValue(Number.isInteger(value.latest_limit)&&value.latest_limit>=0&&value.latest_limit<=100,400,'来源最新数量需为0–100的整数');
  if(Object.hasOwn(value,'paused'))requireValue(typeof value.paused==='boolean',400,'来源暂停状态无效');
+ if(Object.hasOwn(value,'sync_minutes')&&value.sync_minutes!==null)requireValue(Number.isInteger(value.sync_minutes)&&value.sync_minutes>=15&&value.sync_minutes<=10080,400,'来源同步间隔需为 15–10080 分钟的整数');
  return value;
+}
+
+export function setSourceSyncInterval(env,sourceId,minutes,t){
+ return env.DB.prepare(`UPDATE sources SET next_scan=CASE
+  WHEN sync_minutes IS NOT ? AND (kind!='video' OR waiting_replay=1) AND next_scan>?
+  THEN COALESCE((
+   SELECT j.updated_at+CASE WHEN sources.kind='playlist' AND j.discovery_more THEN 900
+    ELSE 60*COALESCE(?,(SELECT sync_hours*60 FROM channel_preferences WHERE id=sources.channel_id)) END
+   FROM jobs j WHERE j.source_id=sources.id AND j.kind='scan' AND j.status='done'
+   ORDER BY j.updated_at DESC,j.id DESC LIMIT 1
+  ),next_scan)
+  ELSE next_scan END,sync_minutes=? WHERE id=?`).bind(minutes,t,minutes,minutes,sourceId);
 }
 
 export function backfillSourceMembership(env,sourceId){

@@ -23,7 +23,7 @@
     },
   ],
   "triggers": {
-    "crons": ["*/15 * * * *"],
+    "crons": ["*/5 * * * *"],
   },
   "vars": {
     "MAX_STORAGE_BYTES": "8000000000",

@@ -33,6 +33,7 @@ try {
  assert.equal((await statusFor(machines.find(e=>e.id!==owner.id))).activeJobs,0,'Status is scoped to the authenticated machine');
  assert.equal(job.options.execution.request_interval,2);await finish(owner,job);
  let denied=await claim(machines[1]);assert.equal(denied.job,null);assert.ok(denied.retryAfter>0,'Start interval survives completion');
+ assert.equal(denied.retryReason,'start_interval','A known start delay is distinguishable from an empty queue');
  await api('/api/execution-policy',{...config,concurrency:2,start_interval:0});
  const second=await Promise.all([0,1,0,1].map(i=>claim(machines[i])));assert.equal(second.filter(r=>r.job).length,2,'Atomic shared concurrent cap');
  const active=second.map((r,i)=>r.job?{j:r.job,e:machines[i%2]}:null).filter(Boolean);
@@ -42,6 +43,7 @@ try {
  await api('/api/execution-policy/resume',{});job=(await claim(machines[0])).job;assert.ok(job);
  await api(`/api/executor/jobs/${job.id}/fail`,{error:'YouTube requires verification; refresh this machine cookies'},{headers:{...auth(machines[0]),'X-Lease-Token':job.leaseToken}});
  denied=await claim(machines[1]);assert.equal(denied.job,null);assert.ok(denied.execution.cooldown_until>Date.now()/1000+40);
+ assert.equal(denied.retryReason,undefined,'Cooldown still checks for an operator resume');
  const dashboard=await api('/api/dashboard');assert.ok(dashboard.executors.every(e=>e.rate_control_version===1));assert.ok(!dashboard.executors.some(e=>e.token_hash));
  await api('/api/execution-policy/resume',{});job=(await claim(machines[1])).job;assert.ok(job);await finish(machines[1],job);
  const [firstMachine,secondMachine]=machines;

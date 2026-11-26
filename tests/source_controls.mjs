@@ -32,7 +32,19 @@ try{
  await settings(a,{paused:true});await api(`/api/executor/jobs/${job.id}/scan`,{entries:[]},{headers:{...auth(),'X-Lease-Token':job.leaseToken},status:409});
  await api(`/api/channels/${channel}/sources/${a.id}/sync`,{},{status:409});assert.equal((await detail()).page.total,7);
  await settings(a,{paused:false});job=await claim();assert.equal(job.source.url,a.url);await scan(job,[]);
- for(const bad of [{latest_limit:-1},{latest_limit:101},{latest_limit:2.5},{latest_limit:'2'},{paused:1},{role:'admin'}])await settings(a,bad,{status:400});
+ const completedAt=async(source)=> (await sql(`SELECT MAX(updated_at) completed FROM jobs WHERE source_id='${source.id}' AND kind='scan' AND status='done'`))[0].results[0].completed;
+ let completed=await completedAt(a);
+ let changed=(await settings(a,{sync_minutes:15})).body.source;
+ assert.equal(changed.sync_minutes,15);assert.equal(changed.next_scan,completed+900,'Faster interval rebases the next scan from its last completion');
+ await api(`/api/channels/${channel}/sources/${a.id}/sync`,{});job=await claim();assert.equal(job.source.url,a.url);
+ await scan(job,[]);completed=await completedAt(a);
+ assert.equal((await detail()).sources.find(s=>s.id===a.id).next_scan,completed+900,'New scans schedule from the source override');
+ changed=(await settings(a,{sync_minutes:null})).body.source;
+ assert.equal(changed.sync_minutes,null);assert.equal(changed.next_scan,completed+6*3600,'Clearing the interval restores the channel schedule');
+ await sql(`UPDATE jobs SET updated_at=unixepoch()-1200 WHERE source_id='${b.id}' AND kind='scan' AND status='done'; UPDATE sources SET next_scan=unixepoch()+1000 WHERE id='${b.id}'`);
+ await settings(b,{sync_minutes:15});job=await claim();assert.equal(job.source.url,b.url,'An already due rebased source is enqueued immediately');
+ await scan(job,[]);
+ for(const bad of [{latest_limit:-1},{latest_limit:101},{latest_limit:2.5},{latest_limit:'2'},{paused:1},{sync_minutes:14},{sync_minutes:'15'},{role:'admin'}])await settings(a,bad,{status:400});
  const stranger=await api('/api/auth/register',{username:'source_stranger_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});accounts.push(stranger.body.user);const strangerCookie=stranger.response.headers.get('set-cookie').split(';')[0];await settings(a,{latest_limit:1},{cookie:strangerCookie,status:404});
- console.log('PASS: independent 2/3 RSS windows, cached audio retention/reuse, channel total, per-source sync, pause lease revocation/resume, strict validation and owner isolation');
+ console.log('PASS: independent source windows, cached audio, scoped sync, minute overrides, inheritance, due enqueuing, lease and owner isolation');
 }finally{await cleanupLocalUsers({origin,sql,accounts});}
