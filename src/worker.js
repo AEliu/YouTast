@@ -104,7 +104,7 @@ async function executorFor(request, env) {
   requireValue(token, 401, "执行器密钥无效");
   const executor = await stmt(
     env,
-    "SELECT x.id,x.user_id,x.minimum_protocol FROM executors x JOIN users u ON u.id=x.user_id WHERE x.token_hash=? AND u.disabled=0",
+    "SELECT x.id,x.user_id,x.minimum_protocol,x.paused FROM executors x JOIN users u ON u.id=x.user_id WHERE x.token_hash=? AND u.disabled=0",
     await hash(token),
   ).first();
   requireValue(executor, 401, "执行器密钥无效");
@@ -360,7 +360,7 @@ async function api(request, env, url, ctx) {
       ),
       stmt(
         env,
-        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version,discovery_control_version FROM executors WHERE user_id=? ORDER BY created_at DESC",
+        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version,discovery_control_version,paused FROM executors WHERE user_id=? ORDER BY created_at DESC",
         user.id,
       ),
       stmt(
@@ -386,7 +386,7 @@ async function api(request, env, url, ctx) {
       channels: result[0].results,
       jobs: result[1].results,
       episodes: result[2].results,
-      executors: result[3].results,
+      executors: result[3].results.map(executor => ({...executor, paused: Boolean(executor.paused)})),
       sources: result[4].results,
       bytes: result[5].results[0].bytes,
       activeJobs: result[5].results[0].active_jobs,
@@ -666,6 +666,14 @@ async function api(request, env, url, ctx) {
     return json({ id: eid, token }, 201);
   }
   const executorRoute = path.match(/^\/api\/executors\/([\w-]+)$/);
+  if (executorRoute && method === "POST") {
+    const b = await body(request);
+    requireValue(Object.keys(b).length === 1 && typeof b.paused === "boolean", 400, "暂停设置无效");
+    const executor = await stmt(env, "UPDATE executors SET paused=? WHERE id=? AND user_id=? RETURNING paused",
+      Number(b.paused), executorRoute[1], user.id).first();
+    requireValue(executor, 404, "执行器不存在");
+    return json({ok:true,paused:Boolean(executor.paused)});
+  }
   if (executorRoute && method === "DELETE") {
     await stmt(
       env,
@@ -758,15 +766,21 @@ async function executorApi(request, env, url) {
     t = now();
   requireValue(request.method === "POST", 405, "仅支持 POST");
   if(path==='/api/executor/status') {
-    const status=await stmt(env,"SELECT id,name,last_seen AS lastSeen,rate_control_version AS rateControlVersion,window_control_version AS windowControlVersion,audio_control_version AS audioControlVersion,replay_control_version AS replayControlVersion,discovery_control_version AS discoveryControlVersion,(SELECT COUNT(*) FROM jobs WHERE executor_id=executors.id AND user_id=? AND status='running' AND lease_until>?) AS activeJobs FROM executors WHERE id=?",executor.user_id,t,executor.id).first();
-    return json({...status,minimumProtocol:executor.minimum_protocol});
+    const status=await stmt(env,"SELECT id,name,paused,last_seen AS lastSeen,rate_control_version AS rateControlVersion,window_control_version AS windowControlVersion,audio_control_version AS audioControlVersion,replay_control_version AS replayControlVersion,discovery_control_version AS discoveryControlVersion,(SELECT COUNT(*) FROM jobs WHERE executor_id=executors.id AND user_id=? AND status='running' AND lease_until>?) AS activeJobs FROM executors WHERE id=?",executor.user_id,t,executor.id).first();
+    requireValue(status, 401, "执行器密钥无效");
+    return json({...status,paused:Boolean(status.paused),minimumProtocol:executor.minimum_protocol});
   }
   if (path === "/api/executor/claim") {
     if(Number(request.headers.get('x-executor-protocol')||1)<executor.minimum_protocol)
       return json({job:null,retryAfter:300,upgradeRequired:true});
+    const report = stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=?,discovery_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0,request.headers.get('x-executor-discovery-control')==='1'?1:0, executor.id);
+    if (executor.paused) {
+      await report.run();
+      return json({job:null,retryAfter:60,executorPaused:true,execution:{paused:true}});
+    }
     // Reclaim only the current owner's expired leases; UPDATE RETURNING arbitrates concurrent machines.
     await env.DB.batch([
-      stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=?,discovery_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0,request.headers.get('x-executor-discovery-control')==='1'?1:0, executor.id),
+      report,
       stmt(
         env,
         "UPDATE jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'queued' END,lease_token=NULL,executor_id=NULL,reserved_bytes=0,error='执行器租约过期',available_at=?,updated_at=? WHERE user_id=? AND status='running' AND lease_until<?",
@@ -826,7 +840,8 @@ async function executorApi(request, env, url) {
           AND running.lease_until>? AND active.video_id=target.video_id)
           AND NOT EXISTS(SELECT 1 FROM episodes completed JOIN channels owner ON owner.id=completed.channel_id
             WHERE owner.user_id=candidate.user_id AND completed.video_id=target.video_id AND completed.object_key IS NOT NULL AND completed.encoding_profile=policy.audio_profile))
-        ORDER BY candidate.created_at,candidate.id LIMIT 1) AND status='queued' RETURNING *`,
+        ORDER BY candidate.created_at,candidate.id LIMIT 1) AND status='queued'
+        AND EXISTS(SELECT 1 FROM executors WHERE id=? AND paused=0) RETURNING *`,
       token,
       executor.id,
       t + 600,
@@ -840,6 +855,7 @@ async function executorApi(request, env, url) {
       request.headers.get('x-executor-audio-control')==='1'?1:0,
       request.headers.get("x-executor-protocol") === "2" ? 1 : 0,
       t,
+      executor.id,
     ).first();}catch(error){
       if(!String(error.message).includes('execution_throttled'))throw error;
       const current=await executionPolicy(env,executor.user_id);

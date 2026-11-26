@@ -6,7 +6,7 @@ import {renderCollection,listRoute,channelRoute} from './list-ui.js';
 import { readApiResponse } from "./api-response.js";
 import {renderAdmin,adminUserFields,limitBytes,invitationFields} from './admin-ui.js';
 import {subscriptionLinks,podcastClients} from './subscribe-links.js';
-import {renderExecution} from './execution-ui.js';
+import {renderExecution,renderExecutorRow} from './execution-ui.js';
 
 const $ = (s) => document.querySelector(s),
   escape = (s) =>
@@ -191,8 +191,12 @@ function render() {
     content.innerHTML = `<div class="section-bar"><strong>你的订阅频道 <small> / ${String(data.channels.length).padStart(2, "0")}</small></strong><small>只有你决定听什么</small></div><div class="grid">${data.channels.map((c, i) => `<article class="channel-card" data-channel-id="${c.id}"><a class="channel-link" href="#channel/${c.id}" aria-label="打开 ${escape(c.title)} 的频道详情"><div class="channel-art art-${i % 5}"><span class="art-tag">PRIVATE PODCAST</span><span class="art-symbol" aria-hidden="true">${["◉", "≋", "∿", "◎", "✳"][i % 5]}</span><span class="art-corner">YOUTAST ORIGINAL SPACE</span></div></a><div class="card-body"><h3><a class="channel-link" href="#channel/${c.id}">${escape(c.title)}</a></h3><p>${escape(c.description || "留给好内容的一方声音空间。")}</p><div class="card-meta"><span>${c.episode_count} 集声音${c.archived_count?` · ${c.archived_count} 集旧音频仍保留缓存`:""} · ${data.sources.filter((s) => s.channel_id === c.id).length} 个来源</span><span>私人频道 ↗</span></div><div class="card-actions"><button class="small-button" data-action="sources" data-id="${c.id}">＋ 来源</button><button class="small-button" data-action="rss" data-id="${c.id}">▦ 扫码订阅</button><button class="small-button" data-action="channel-settings" data-id="${c.id}">频道设置</button><button class="small-button" data-action="sort" data-id="${c.id}">排序</button><button class="small-button" data-action="sync" data-id="${c.id}">同步</button><button class="small-button danger" data-action="delete-channel" data-id="${c.id}">删除</button></div></div></article>`).join("")}<button class="add-card" data-action="new-channel"><span>＋</span><strong>开始一个新的声音频道</strong><small>视频 / Playlist / 创作者</small></button></div><div class="intro-strip"><div class="intro-icon">♫</div><div><strong>把你的频道，带到喜欢的 Podcast 播放器。</strong><p>添加 YouTube 来源 → 连接执行器 → 等待音频生成 → 使用私人 RSS 订阅。订阅链接是访问凭证，请妥善保管。</p></div></div>`;
   if(view==='episodes'||view==='jobs')content.innerHTML=collectionData?renderCollection(collectionData,view,{escape,statusNames,channels:data.channels}):`<div class="empty" role="status">${escape(collectionError||'正在加载列表…')}</div>`;
   if (view === "settings") content.innerHTML = renderSettings();
-  if (view === "executors")
-    content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${data.executors.length ? `<div class="list">${data.executors.map((e) => `<article class="list-row"><div class="list-icon">⌘</div><div class="list-details"><strong>${escape(e.name)}</strong><p>${e.last_seen&&(e.rate_control_version!==1||e.window_control_version!==1||e.audio_control_version!==1||e.replay_control_version!==1||e.discovery_control_version!==1)?"旧版本：请升级执行器以使用请求间隔、自定义候选数、最新N、AAC音频、直播回放及播放列表完整发现。 · ":""}${e.last_seen ? `最后连接：${new Date(e.last_seen * 1000).toLocaleString("zh-CN")}` : "尚未连接 · 请在机器上启动 Python 执行器"}</p></div><span class="badge">${e.last_seen && Date.now() / 1000 - e.last_seen < 400 ? "最近在线" : "等待连接"}</span><button class="small-button danger" data-action="revoke" data-id="${e.id}">撤销密钥</button></article>`).join("")}</div>` : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。")}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
+  if (view === "executors") {
+    const machines = data.executors.length
+      ? `<p class="muted">暂停单台机器后，正在处理的任务会继续完成。</p><div class="list">${data.executors.map(executor=>renderExecutorRow(executor,escape)).join("")}</div>`
+      : empty("还没有连接机器。创建执行器密钥，然后在你的电脑或服务器上运行 Python 执行器。");
+    content.innerHTML = `${renderExecution(executionData)}<div class="section-bar"><strong>我的机器 <small> / 每个密钥只允许访问你的任务</small></strong><div class="section-actions"><a class="small-button" href="/install.html" target="_blank" rel="noopener">安装说明 ↗</a><a class="small-button" href="/downloads/youtast-executor-0.1.0.zip" download>下载执行器 ↓</a><button class="primary" data-action="new-executor">＋ 连接执行器</button></div></div>${machines}<div class="intro-strip"><div class="intro-icon">⌘</div><div><strong>一台机器也可以，多台机器更从容。</strong><p>机器主动访问 Cloudflare，无需开放入站端口。点击安装说明下载执行器并启动；每台机器使用独立密钥。</p></div></div>`;
+  }
   updateTaskSelection(content);
   updateAudioSelection(content);
 }
@@ -470,7 +474,18 @@ $("#content").addEventListener("click", async (event) => {
       location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView):listRoute(view,0,'',taskView);
       return;
     }
-    if(action==='execution-resume') {await api('/api/execution-policy/resume',{method:'POST'});await refresh();toast('已恢复领取，将遵守启动间隔');return;}
+    if(action==='execution-resume') {await api('/api/execution-policy/resume',{method:'POST'});await refresh();toast('已解除账号暂停和冷却');return;}
+    if(action==='executor-pause') {
+      button.disabled=true;
+      try {
+        const result=await api(`/api/executors/${cid}`,{method:'POST',body:JSON.stringify({paused:button.dataset.paused==='true'})});
+        const machine=data?.executors.find(executor=>executor.id===cid);
+        if(machine)machine.paused=result.paused;
+        await refresh();
+        toast(result.paused?'此执行器已暂停领取':'此执行器已恢复领取');
+      } finally {button.disabled=false;}
+      return;
+    }
     if(action==='admin-invite-create'||action==='admin-invite-edit') {
       const invite=action==='admin-invite-edit'?adminData.invites.find(i=>i.id===cid):null;
       openDialog(invite?'管理邀请码':'生成邀请码',invitationFields(invite),invite?'保存':'生成',async form=>{

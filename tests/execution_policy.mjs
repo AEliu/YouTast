@@ -23,8 +23,8 @@ try {
  const observer=machines[0];
  const statusFor=e=>api('/api/executor/status',{}, {headers:auth(e)});
  let status=await statusFor(observer);
- assert.deepEqual(Object.keys(status).sort(),['id','name','lastSeen','rateControlVersion','windowControlVersion','audioControlVersion','replayControlVersion','activeJobs','minimumProtocol'].sort());
- assert.equal(status.id,observer.id);assert.equal(status.name,'throttle machine 0');assert.equal(status.activeJobs,0);
+ assert.deepEqual(Object.keys(status).sort(),['id','name','lastSeen','rateControlVersion','windowControlVersion','audioControlVersion','replayControlVersion','discoveryControlVersion','activeJobs','minimumProtocol','paused'].sort());
+ assert.equal(status.id,observer.id);assert.equal(status.name,'throttle machine 0');assert.equal(status.activeJobs,0);assert.equal(status.paused,false);
  const beforeStatusSeen=status.lastSeen;
  assert.deepEqual(await statusFor(observer),status,'Inspection must not claim jobs or update last_seen');
  const first=await Promise.all(Array.from({length:6},(_,i)=>claim(machines[i%2])));assert.equal(first.filter(r=>r.job).length,1,'Shared default gate across machines');
@@ -44,9 +44,42 @@ try {
  denied=await claim(machines[1]);assert.equal(denied.job,null);assert.ok(denied.execution.cooldown_until>Date.now()/1000+40);
  const dashboard=await api('/api/dashboard');assert.ok(dashboard.executors.every(e=>e.rate_control_version===1));assert.ok(!dashboard.executors.some(e=>e.token_hash));
  await api('/api/execution-policy/resume',{});job=(await claim(machines[1])).job;assert.ok(job);await finish(machines[1],job);
+ const [firstMachine,secondMachine]=machines;
+ const machineRoute=`/api/executors/${firstMachine.id}`;
+ await api('/api/execution-policy',{...config,concurrency:2,start_interval:0});
+ const inFlight=(await claim(firstMachine)).job;assert.ok(inFlight);
+ assert.deepEqual(await api(machineRoute,{paused:true}),{ok:true,paused:true});
+ assert.equal((await api(machineRoute,{paused:true})).paused,true,'Pause is idempotent');
+ const [pausedClaim,otherClaim]=await Promise.all(machines.map(claim));
+ assert.equal(pausedClaim.job,null);assert.equal(pausedClaim.executorPaused,true);assert.equal(pausedClaim.execution.paused,true);
+ assert.ok(otherClaim.job,'The other machine continues taking work');
+ assert.equal((await statusFor(firstMachine)).activeJobs,1,'Pausing preserves the existing lease');
+ assert.equal((await statusFor(firstMachine)).paused,true);
+ const machineStates=new Map((await api('/api/dashboard')).executors.map(e=>[e.id,e.paused]));
+ assert.equal(machineStates.get(firstMachine.id),true);assert.equal(machineStates.get(secondMachine.id),false);
+ assert.equal((await api('/api/execution-policy')).paused,false,'A machine pause is independent of account policy');
+ await api(machineRoute,{paused:'false'},{status:400});
+ await api(machineRoute,{paused:false,token:'other'},{status:400});
+ await api(machineRoute,{paused:false},{headers:{Origin:'https://evil.example'},status:403});
+ await api(machineRoute,{paused:false},{headers:{...auth(firstMachine),Cookie:''},status:401});
+ const ownerCookie=cookie;
+ const strangerName='pause_stranger_'+suffix;
+ const stranger=await api('/api/auth/register',{username:strangerName,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});
+ accounts.push({id:stranger.user.id,username:strangerName});
+ try{await api(machineRoute,{paused:false},{status:404});}finally{cookie=ownerCookie;}
+ await api(`/api/executor/jobs/${inFlight.id}/heartbeat`,{}, {headers:{...auth(firstMachine),'X-Lease-Token':inFlight.leaseToken}});
+ await finish(firstMachine,inFlight);await finish(secondMachine,otherClaim.job);
+ await api('/api/execution-policy',{...config,start_interval:0,paused:true});
+ assert.equal((await claim(secondMachine)).job,null);
+ await api('/api/execution-policy/resume',{});
+ assert.equal((await claim(firstMachine)).executorPaused,true,'Account resume preserves the machine pause');
+ assert.deepEqual(await api(machineRoute,{paused:false}),{ok:true,paused:false});
+ job=(await claim(firstMachine)).job;assert.ok(job,'The original key can claim again after resuming');
+ await finish(firstMachine,job);
+ assert.equal((await statusFor(firstMachine)).paused,false);
  await api('/api/execution-policy',{...config,concurrency:4},{status:400});await api('/api/execution-policy',{...config,start_interval:-1},{status:400});await api('/api/execution-policy',{...config,request_interval:1.5},{status:400});await api('/api/execution-policy',{...config,user_id:'other'},{status:400});
  await api('/api/execution-policy',config,{headers:{Origin:'https://evil.example'},status:403});
- console.log('PASS: defaults, atomic per-user multi-machine concurrency/start gap, pause/drain/resume, verification cooldown, bounds/Origin isolation and capability reporting');
+ console.log('PASS: shared limits, account and individual pauses, active leases, key reuse, account isolation and verification cooldown');
 }finally{
  try{
  for(const e of machines)try{await fetch(origin+'/api/executors/'+e.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});}catch{}
