@@ -16,7 +16,7 @@ try {
  const user=await api('/api/auth/register',{username:'throttle_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});
  accounts.push({id:user.user.id,username:'throttle_'+suffix});
  const defaults=await api('/api/execution-policy');assert.equal(defaults.concurrency,1);assert.equal(defaults.start_interval,60);assert.equal(defaults.request_interval,2);assert.equal(defaults.download_wait,10);
- assert.equal(defaults.scan_concurrency,1);assert.equal(defaults.scan_start_interval,15);
+ assert.equal(defaults.scan_concurrency,1);assert.equal(defaults.scan_start_interval,15);assert.equal(defaults.skip_paid,true);
  const config={concurrency:1,start_interval:60,scan_concurrency:1,scan_start_interval:0,request_interval:2,download_wait:10,cooldown_seconds:60,paused:false};
  cid=(await api('/api/channels',{title:'Execution control fixture'},{status:201})).id;
  await api(`/api/channels/${cid}/sources`,{urls:Array.from({length:8},(_,i)=>`https://www.youtube.com/watch?v=limit${i}abcde`)},{status:201});
@@ -90,10 +90,30 @@ try {
  const audioAuth={...auth(secondMachine),'X-Executor-Audio-Control':'1'};
  const audio=(await api('/api/executor/claim',{}, {headers:audioAuth})).job;
  assert.equal(audio.kind,'transcode','Audio can claim during the scan startup delay');
+ assert.equal(audio.options.execution.skip_paid,true);
  const waiting=await claim(firstMachine);assert.equal(waiting.job,null);assert.equal(waiting.retryReason,'start_interval');
  await sql(`UPDATE execution_policy SET scan_next_start_at=0 WHERE user_id='${user.user.id}'`);
  const scans=await Promise.all([firstMachine,secondMachine].map(claim));
  assert.equal(scans.filter(r=>r.job?.kind==='scan').length,1,'A real audio lease does not block one scan, and the scan cap is atomic');
+ await api(`/api/executor/jobs/${audio.id}/fail`,{skip_paid:true},{headers:{...audioAuth,'X-Lease-Token':audio.leaseToken}});
+ const current=await api('/api/jobs?kind=transcode');assert.equal(current.counts.failed,0);
+ const history=await api('/api/jobs?kind=transcode&tasks=history');assert.equal(history.jobs.find(j=>j.id===audio.id).display_status,'skipped');
+
+ const fastPolicy={...config,start_interval:0};
+ assert.equal((await api('/api/execution-policy',{...fastPolicy,skip_paid:false})).policy.skip_paid,false);
+ assert.equal((await api('/api/execution-policy',fastPolicy)).policy.skip_paid,false,'Older forms preserve the saved preference');
+ assert.equal((await claim(firstMachine)).upgradeRequired,true,'An older executor cannot claim with skipping disabled');
+ for(const [index,result] of scans.entries())if(result.job)await finish(machines[index],result.job);
+ const paidAuth={...audioAuth,'X-Executor-Paid-Control':'1'};
+ const paidScan=(await api('/api/executor/claim',{}, {headers:paidAuth})).job;
+ assert.equal(paidScan.kind,'scan');assert.equal(paidScan.options.execution.skip_paid,false);
+ await api(`/api/executor/jobs/${paidScan.id}/scan`,{entries:[{video_id:new URL(paidScan.source.url).searchParams.get('v'),title:'Paid filter fixture',duration:30}]},
+  {headers:{...paidAuth,'X-Lease-Token':paidScan.leaseToken}});
+ const paidAudio=(await api('/api/executor/claim',{}, {headers:paidAuth})).job;
+ assert.equal(paidAudio.kind,'transcode');assert.equal(paidAudio.options.execution.skip_paid,false);
+ await api('/api/execution-policy',{...config,skip_paid:true});
+ assert.equal((await api('/api/execution-policy')).skip_paid,true);
+ await api('/api/execution-policy',{...config,skip_paid:'false'},{status:400});
  await api('/api/execution-policy',{...config,concurrency:4},{status:400});await api('/api/execution-policy',{...config,start_interval:-1},{status:400});await api('/api/execution-policy',{...config,request_interval:1.5},{status:400});await api('/api/execution-policy',{...config,user_id:'other'},{status:400});
  await api('/api/execution-policy',config,{headers:{Origin:'https://evil.example'},status:403});
  console.log('PASS: separate queue limits and start spacing, parallel scan/audio, account and machine pauses, stable leases, and isolation');

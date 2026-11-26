@@ -34,6 +34,14 @@ class PaidVideoTest(unittest.TestCase):
                                       'source': {'kind': 'author', 'url': 'https://www.youtube.com/@creator/videos'}, 'options': {}})
         self.assertEqual([x['video_id'] for x in calls[-1][1]['entries']], ['video000003', 'video000004'])
 
+        agent.playlist_batch(API(), '/job', 'lease', {'entries': rows}, rows, skip_paid=False)
+        self.assertEqual([x['id'] for x in calls[-1][1]['items']], [row['id'] for row in rows])
+        with patch.dict(os.environ, {}, clear=True), patch.object(agent, 'run_command', run):
+            agent.process_job(API(), {'id': 'scan', 'kind': 'scan', 'leaseToken': 'lease',
+                                      'source': {'kind': 'author', 'url': 'https://www.youtube.com/@creator/videos'},
+                                      'options': {'execution': {'skip_paid': False}}})
+        self.assertEqual([x['video_id'] for x in calls[-1][1]['entries']], [row['id'] for row in rows])
+
     def test_both_audio_paths_filter_and_report_paid_without_retry(self):
         for profile in ('m4a:64:source', 'mp3'):
             for availability in agent.PAID_AVAILABILITY:
@@ -54,6 +62,30 @@ class PaidVideoTest(unittest.TestCase):
                     for status in ('public', 'unlisted', None):
                         self.assertIsNone(match({'duration': 30, 'is_live': False, 'availability': status}, incomplete=False))
                     self.assertEqual(calls, [('/api/executor/jobs/audio/fail', {'skip_paid': True})])
+
+    def test_disabling_skip_allows_both_audio_paths_to_attempt_download(self):
+        for profile in ('m4a:64:source', 'mp3'):
+            with self.subTest(profile=profile):
+                calls, commands = [], []
+
+                class API:
+                    def post(self, path, data=None, **kwargs):
+                        calls.append((path, data))
+
+                def run(args, cwd, lost, output):
+                    commands.append(args)
+                    (cwd / 'availability.txt').write_text('subscriber_only', encoding='utf-8')
+                    raise RuntimeError('YouTube denied access for this session')
+
+                with patch.dict(os.environ, {}, clear=True), patch.object(agent, 'run_command', run):
+                    agent.process_job(API(), {'id': 'audio', 'kind': 'transcode', 'leaseToken': 'lease',
+                                              'episode': {'video_id': 'video000001'},
+                                              'options': {'encoding_profile': profile, 'execution': {'skip_paid': False}}})
+                expression = commands[0][commands[0].index('--match-filters') + 1]
+                match = match_filter_func(expression)
+                for status in agent.PAID_AVAILABILITY:
+                    self.assertIsNone(match({'duration': 30, 'is_live': False, 'availability': status}, incomplete=False))
+                self.assertEqual(calls, [('/api/executor/jobs/audio/fail', {'error': 'YouTube denied access for this session'})])
 
     def test_ytdlp_exposes_availability_before_filter_without_downloading(self):
         with tempfile.TemporaryDirectory() as directory:

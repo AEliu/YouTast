@@ -167,6 +167,7 @@ class API:
 
     def post(self, path, data=None, lease=None, audio=None, duration=0, published_at=None):
         headers = {"Authorization": "Bearer " + self.token, "User-Agent": "YouTast-Executor/0.1", "Accept": "application/json", "X-Executor-Protocol": "2", "X-Executor-Rate-Control":"1", "X-Executor-Content-Control":"1", "X-Executor-Audio-Control":"1", "X-Executor-Replay-Control":"1", "X-Executor-Discovery-Control":"1"}
+        headers['X-Executor-Paid-Control'] = '1'
         if lease:
             headers["X-Lease-Token"] = lease
         if audio:
@@ -303,18 +304,20 @@ class PaidVideoSkipped(RuntimeError):
 PAID_AVAILABILITY = ('subscriber_only', 'premium_only')
 
 
-def run_audio_download(args,cwd,lost):
+def run_audio_download(args,cwd,lost,skip_paid=True):
     # Observe status before yt-dlp's filters/format selection, using the same
     # extraction request. No extra per-video preflight request is required.
     at=args.index('--')
-    args[at:at]=['--ignore-no-formats-error','--no-simulate','--print-to-file','pre_process:%(live_status)s','replay-state.txt',
-                 '--print-to-file','pre_process:%(availability)s','availability.txt']
+    state_args=['--ignore-no-formats-error','--no-simulate','--print-to-file','pre_process:%(live_status)s','replay-state.txt']
+    if skip_paid:
+        state_args.extend(['--print-to-file','pre_process:%(availability)s','availability.txt'])
+    args[at:at]=state_args
     def pending():
         path=cwd/'replay-state.txt'
         return path.is_file() and any(s.strip() in ('is_live','is_upcoming','post_live') for s in path.read_text(encoding='utf-8').splitlines())
     def paid():
         path=cwd/'availability.txt'
-        return path.is_file() and any(s.strip() in PAID_AVAILABILITY for s in path.read_text(encoding='utf-8').splitlines())
+        return skip_paid and path.is_file() and any(s.strip() in PAID_AVAILABILITY for s in path.read_text(encoding='utf-8').splitlines())
     try:
         run_command(args,cwd,lost,'download.log')
     except RuntimeError:
@@ -325,7 +328,7 @@ def run_audio_download(args,cwd,lost):
     if pending():raise ReplayPending('Live replay is not ready')
 
 
-def playlist_batch(api, path, lease, metadata, entries):
+def playlist_batch(api, path, lease, metadata, entries, skip_paid=True):
     """Compare a complete accessible ID inventory, then collect one durable batch."""
     if not isinstance(metadata.get('entries'), list) or not isinstance(entries, list):
         raise ValueError('Playlist inventory is not complete')
@@ -339,7 +342,8 @@ def playlist_batch(api, path, lease, metadata, entries):
         if not isinstance(entry, dict):
             continue
         video_id = entry.get('id', '')
-        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id) or video_id in available or entry.get('is_live') or entry.get('live_status') in ('is_live', 'is_upcoming', 'post_live') or entry.get('availability') in ('private', *PAID_AVAILABILITY):
+        availability=entry.get('availability')
+        if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id) or video_id in available or entry.get('is_live') or entry.get('live_status') in ('is_live', 'is_upcoming', 'post_live') or availability=='private' or (skip_paid and availability in PAID_AVAILABILITY):
             continue
         items.append({'id': video_id, 'position': position})
         available[video_id] = (position, entry)
@@ -369,6 +373,7 @@ def process_job(api, job):
             text_language = options.get('text_language', 'zh-CN')
             scan_limit = options.get('scan_limit', 30)
             execution = options.get('execution', {})
+            skip_paid = execution.get('skip_paid', True)
             request_interval,download_wait = execution.get('request_interval',2),execution.get('download_wait',10)
             if type(request_interval) is not int or not 0<=request_interval<=30 or type(download_wait) is not int or not 0<=download_wait<=60:
                 raise ValueError('Unsupported execution request limits')
@@ -410,12 +415,12 @@ def process_job(api, job):
                 metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                 entries = metadata.get("entries", [metadata])
                 if source['kind']=='playlist':
-                    entries=playlist_batch(api,path,job['leaseToken'],metadata,entries)
+                    entries=playlist_batch(api,path,job['leaseToken'],metadata,entries,skip_paid)
                 else:
                     entries=[(position,entry) for position,entry in enumerate(entries[:scan_limit],1)]
                 results = []
                 for position, entry in entries:
-                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live") or entry.get('availability') in PAID_AVAILABILITY:
+                    if not entry or not VIDEO_ID.fullmatch(entry.get("id", "")) or entry.get("is_live") or entry.get("live_status") in ("is_live", "is_upcoming", "post_live") or (skip_paid and entry.get('availability') in PAID_AVAILABILITY):
                         continue
                     # Flat stream lists may omit status. A finite duration is
                     # required before accepting an archive; recheck next sync.
@@ -437,10 +442,14 @@ def process_job(api, job):
                     if info.stat().st_size > 8_000_000:
                         raise RuntimeError('Metadata exceeds size limit')
                     meta = json.loads(info.read_text(encoding='utf-8'))
+                    if skip_paid and meta.get('availability') in PAID_AVAILABILITY:
+                        raise PaidVideoSkipped('会员或付费专享视频已跳过')
                     api.post(path + '/metadata', {'metadata':{**video_metadata(meta),'text_language':text_language,'complete':True},'title':str(meta.get('title') or video_id)[:300],'published_at':publication_time(meta),'complete_job':True},lease=job['leaseToken'])
                     return
                 max_duration = min(10800, int(89_000_000 * 8 / (bitrate * 1000)))
-                download_filter = f'duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming & availability !=? subscriber_only & availability !=? premium_only'
+                download_filter = f'duration <= {max_duration} & !is_live & live_status !=? post_live & live_status !=? is_upcoming'
+                if skip_paid:
+                    download_filter += ''.join(f' & availability !=? {status}' for status in PAID_AVAILABILITY)
                 # Embedded ID3 chapters also work for private RSS and older clients
                 # which do not consume the external Podcasting 2.0 chapter file.
                 if m4a:
@@ -452,7 +461,7 @@ def process_job(api, job):
                         '--print-to-file','after_move:filepath','download-path.txt','--output','source.%(ext)s',
                         '--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0),
                         '--',f'https://www.youtube.com/watch?v={video_id}']
-                    run_audio_download(args,cwd,lost)
+                    run_audio_download(args,cwd,lost,skip_paid)
                     source=Path((cwd/'download-path.txt').read_text(encoding='utf-8').strip())
                     if not source.is_absolute():source=cwd/source
                     if source.resolve().parent!=cwd.resolve() or not source.is_file() or source.stat().st_size>250_000_000:
@@ -464,7 +473,7 @@ def process_job(api, job):
                 else:
                     args = common + ["--no-playlist", "--format", selection, "--extract-audio", "--audio-format", "mp3", "--audio-quality", f"{bitrate}K", "--embed-chapters", "--postprocessor-args", "Metadata+ffmpeg_o:-id3v2_version 3", "--max-filesize", "250M", "--match-filters", download_filter, "--write-info-json", "--output", "audio.%(ext)s", "--", f"https://www.youtube.com/watch?v={video_id}"]
                     args[args.index('--'):args.index('--')] = ['--sleep-interval',str(download_wait),'--max-sleep-interval',str(download_wait+10 if download_wait else 0)]
-                    run_audio_download(args,cwd,lost)
+                    run_audio_download(args,cwd,lost,skip_paid)
                     audio = cwd / "audio.mp3"
                     if not audio.exists() or audio.stat().st_size <= 0 or audio.stat().st_size > 90_000_000:
                         raise RuntimeError("No audio produced or MP3 exceeds 90 MB (videos limited to 3 hours)")

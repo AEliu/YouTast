@@ -1,4 +1,5 @@
 import {previewTaskAction,applyTaskAction} from './task-actions.js';
+import {PAID_SKIP_REASON} from './task-view.js';
 import {deleteSelectedAudio} from './audio-actions.js';
 import {windowCte} from './window-query.js';
 import {audioMedia} from './audio.js';
@@ -315,14 +316,15 @@ async function api(request, env, url, ctx) {
     if(method==='POST') {
       const b=validateExecution(await body(request));
       const scanConcurrency=b.scan_concurrency??null,scanInterval=b.scan_start_interval??null;
-      await stmt(env,`INSERT INTO execution_policy(user_id,concurrency,start_interval,request_interval,download_wait,cooldown_seconds,paused,scan_concurrency,scan_start_interval)
-       VALUES(?,?,?,?,?,?,?,COALESCE(?,1),COALESCE(?,15)) ON CONFLICT(user_id) DO UPDATE SET concurrency=excluded.concurrency,start_interval=excluded.start_interval,
+      const skipPaid=b.skip_paid===undefined?null:Number(b.skip_paid);
+      await stmt(env,`INSERT INTO execution_policy(user_id,concurrency,start_interval,request_interval,download_wait,cooldown_seconds,paused,scan_concurrency,scan_start_interval,skip_paid)
+       VALUES(?,?,?,?,?,?,?,COALESCE(?,1),COALESCE(?,15),COALESCE(?,1)) ON CONFLICT(user_id) DO UPDATE SET concurrency=excluded.concurrency,start_interval=excluded.start_interval,
        request_interval=excluded.request_interval,download_wait=excluded.download_wait,cooldown_seconds=excluded.cooldown_seconds,paused=excluded.paused,
        next_start_at=MAX(0,next_start_at-start_interval+excluded.start_interval),
        scan_concurrency=COALESCE(?,scan_concurrency),scan_start_interval=COALESCE(?,scan_start_interval),
-       scan_next_start_at=MAX(0,scan_next_start_at-scan_start_interval+COALESCE(?,scan_start_interval))`,
+       scan_next_start_at=MAX(0,scan_next_start_at-scan_start_interval+COALESCE(?,scan_start_interval)),skip_paid=COALESCE(?,skip_paid)`,
        user.id,b.concurrency,b.start_interval,b.request_interval,b.download_wait,b.cooldown_seconds,b.paused?1:0,
-       scanConcurrency,scanInterval,scanConcurrency,scanInterval,scanInterval).run();
+       scanConcurrency,scanInterval,skipPaid,scanConcurrency,scanInterval,scanInterval,skipPaid).run();
       return json({ok:true,policy:await executionPolicy(env,user.id)});
     }
   }
@@ -364,7 +366,7 @@ async function api(request, env, url, ctx) {
       ),
       stmt(
         env,
-        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version,discovery_control_version,paused FROM executors WHERE user_id=? ORDER BY created_at DESC",
+        "SELECT id,name,created_at,last_seen,rate_control_version,window_control_version,audio_control_version,replay_control_version,discovery_control_version,paid_control_version,paused FROM executors WHERE user_id=? ORDER BY created_at DESC",
         user.id,
       ),
       stmt(
@@ -780,7 +782,8 @@ async function executorApi(request, env, url) {
   if (path === "/api/executor/claim") {
     if(Number(request.headers.get('x-executor-protocol')||1)<executor.minimum_protocol)
       return json({job:null,retryAfter:300,upgradeRequired:true});
-    const report = stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=?,discovery_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0,request.headers.get('x-executor-discovery-control')==='1'?1:0, executor.id);
+    const paidControl=request.headers.get('x-executor-paid-control')==='1';
+    const report = stmt(env, "UPDATE executors SET last_seen=?,rate_control_version=?,window_control_version=?,audio_control_version=?,replay_control_version=?,discovery_control_version=?,paid_control_version=? WHERE id=?", t,request.headers.get('x-executor-rate-control')==='1'?1:0,request.headers.get('x-executor-content-control')==='1'?1:0,request.headers.get('x-executor-audio-control')==='1'?1:0,request.headers.get('x-executor-replay-control')==='1'?1:0,request.headers.get('x-executor-discovery-control')==='1'?1:0,Number(paidControl),executor.id);
     if (executor.paused) {
       await report.run();
       return json({job:null,retryAfter:60,executorPaused:true,execution:{paused:true}});
@@ -826,6 +829,8 @@ async function executorApi(request, env, url) {
     const policy=await executionPolicy(env,executor.user_id);
     if(policy.paused||policy.cooldown_until>t)
       return json({job:null,...await claimWait(env,executor.user_id,policy,t),execution:policy});
+    if(!policy.skip_paid&&!paidControl)
+      return json({job:null,retryAfter:300,upgradeRequired:true,execution:policy});
     const token = secret();
     let job;
     try {job = await stmt(
@@ -948,7 +953,7 @@ async function executorApi(request, env, url) {
     const b = await body(request);
     if(b.skip_paid===true) {
       requireValue(job.kind==='transcode',409,'仅音频任务可跳过会员视频');
-      const result=await stmt(env,"UPDATE jobs SET status='failed',error='会员或付费专享视频已跳过',lease_token=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE id=? AND lease_token=? AND status='running' AND lease_until>?",t,job.id,lease,t).run();
+      const result=await stmt(env,"UPDATE jobs SET status='failed',error=?,lease_token=NULL,executor_id=NULL,reserved_bytes=0,updated_at=? WHERE id=? AND lease_token=? AND status='running' AND lease_until>?",PAID_SKIP_REASON,t,job.id,lease,t).run();
       requireValue(result.meta.changes===1,409,'任务租约已失效');
       return json({ok:true,skipped:true});
     }

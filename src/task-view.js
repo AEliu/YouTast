@@ -1,5 +1,7 @@
 import {requireValue} from './lib.js';
 
+export const PAID_SKIP_REASON='会员或付费专享视频已跳过';
+
 // Legacy jobs use 'failed' for these intentional stops. Keep their records and
 // scheduling semantics, but do not present them as errors needing attention.
 const stoppedReasons=[
@@ -22,11 +24,13 @@ export function taskKind(url) {
 export const taskKindSql=kind=>kind==='scan'?"j.kind='scan'":kind==='transcode'?"j.kind='transcode'":'1=1';
 export function taskStateSql(alias='j') {
  const reasons=stoppedReasons.map(s=>"'"+s.replaceAll("'","''")+"'").join(',');
- return `CASE WHEN ${alias}.dismissed_at IS NOT NULL THEN 'dismissed' WHEN ${alias}.status='failed' AND ${alias}.error IN(${reasons}) THEN 'stopped' ELSE ${alias}.status END`;
+ return `CASE WHEN ${alias}.dismissed_at IS NOT NULL THEN 'dismissed'
+  WHEN ${alias}.status='failed' AND ${alias}.error='${PAID_SKIP_REASON}' THEN 'skipped'
+  WHEN ${alias}.status='failed' AND ${alias}.error IN(${reasons}) THEN 'stopped' ELSE ${alias}.status END`;
 }
 export function taskCondition(view,alias='j') {
  const state=taskStateSql(alias);
- return `${state} IN(${view==='history'?"'done','stopped'":"'queued','running','failed'"})`;
+ return `${state} IN(${view==='history'?"'done','stopped','skipped'":"'queued','running','failed'"})`;
 }
 export function taskCountsSql(alias='j') {
  return `COALESCE(SUM(${taskCondition('current',alias)}),0) jobs,

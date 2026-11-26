@@ -20,7 +20,7 @@ export function sourceJobTitle(job) {
 }
 
 export function taskViews(tasks,counts,route) {
- return `<nav class="detail-tabs" aria-label="任务分类"><a href="${route('current')}" ${tasks!=='history'?'aria-current="page"':''}>当前任务 ${counts?.jobs??0}</a><a href="${route('history')}" ${tasks==='history'?'aria-current="page"':''}>历史记录 ${counts?.history??0}</a></nav><p class="muted">${tasks==='history'?'已完成及因来源暂停、节目范围变化或音频清理而停止的记录。':`待处理 ${counts?.queued??0} · 处理中 ${counts?.running??0} · 失败 ${counts?.failed??0}`}</p>`;
+ return `<nav class="detail-tabs" aria-label="任务分类"><a href="${route('current')}" ${tasks!=='history'?'aria-current="page"':''}>当前任务 ${counts?.jobs??0}</a><a href="${route('history')}" ${tasks==='history'?'aria-current="page"':''}>历史记录 ${counts?.history??0}</a></nav><p class="muted">${tasks==='history'?'已完成、已停止和已跳过的任务。':`待处理 ${counts?.queued??0} · 处理中 ${counts?.running??0} · 失败 ${counts?.failed??0}`}</p>`;
 }
 
 export function searchForm(query,escape,label='搜索节目') {

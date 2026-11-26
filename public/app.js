@@ -49,6 +49,7 @@ const sortNames = { source: "自动（最新合集按时间混排）", source_gr
 const statusNames = {
   queued: "等待处理",
   stopped: "已停止",
+  skipped: "已跳过",
   running: "处理中",
   done: "已完成",
   failed: "失败",
@@ -223,7 +224,7 @@ $('#content').addEventListener('submit',async event=>{
   event.preventDefault();const form=new FormData(event.target),button=event.submitter;
   if(button)button.disabled=true;
   try {
-   const payload={concurrency:Number(form.get('concurrency')),start_interval:Number(form.get('start_interval')),scan_concurrency:Number(form.get('scan_concurrency')),scan_start_interval:Number(form.get('scan_start_interval')),request_interval:Number(form.get('request_interval')),download_wait:Number(form.get('download_wait')),cooldown_seconds:Number(form.get('cooldown_minutes'))*60,paused:form.get('paused')==='true'};
+   const payload={concurrency:Number(form.get('concurrency')),start_interval:Number(form.get('start_interval')),scan_concurrency:Number(form.get('scan_concurrency')),scan_start_interval:Number(form.get('scan_start_interval')),request_interval:Number(form.get('request_interval')),download_wait:Number(form.get('download_wait')),cooldown_seconds:Number(form.get('cooldown_minutes'))*60,paused:form.get('paused')==='true',skip_paid:form.has('skip_paid')};
    await api('/api/execution-policy',{method:'POST',body:JSON.stringify(payload)});await refresh();toast('请求控制已保存，后续任务生效');
   }catch(e){toast(e.message);}finally{if(button)button.disabled=false;}
   return;
