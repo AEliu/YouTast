@@ -513,7 +513,7 @@ def main():
     if hasattr(signal, 'SIGUSR1'):
         # Stop claiming new work while letting active jobs finish normally.
         signal.signal(signal.SIGUSR1, lambda *_: DRAIN.set())
-    idle = 60
+    failure_delay = 60
     LOG.info("Executor started; waiting for tasks")
     if os.environ.get("YOUTAST_POT_PROVIDER_HOME"):
         LOG.info("Local PO Token provider configured for YouTube downloads")
@@ -529,25 +529,26 @@ def main():
                 continue
             try:
                 result = api.post("/api/executor/claim")
+                failure_delay = 60
                 policy=result.get('execution',{})
                 capacity=max(1,min(6,int(policy.get('concurrency',1))+int(policy.get('scan_concurrency',0))))
                 if result["job"]:
-                    idle=60
                     LOG.info("Processing %s job %s",result['job']['kind'],result['job']['id'])
                     running.add(pool.submit(process_job,api,result['job']))
                     wake_on_finish=True
                     next_claim=time.monotonic()+(60 if len(running)>=capacity else 0)
                     continue
-                retry_after=result.get('retryAfter',60)
-                if result.get('retryReason')=='start_interval':
-                    wake_on_finish=False
-                    next_claim=time.monotonic()+max(1,retry_after)
-                    continue
-                delay=max(15,retry_after)
-                blocked=result.get('execution',{}).get('paused') or result.get('execution',{}).get('cooldown_until',0)>time.time()
-                wake_on_finish=not blocked
-                if running and len(running)>=capacity:delay=max(60,delay)
-                idle=min(60,delay) if blocked or running else min(300,max(idle,delay)*1.4)
+                retry_after = max(1, result.get('retryAfter', 60))
+                if result.get('retryReason') == 'start_interval' or result.get('upgradeRequired'):
+                    delay = retry_after
+                    wake_on_finish = False
+                elif policy.get('paused') or policy.get('cooldown_until', 0) > time.time():
+                    # The server still controls cooldown. Check for an operator resume within a minute.
+                    delay = min(60, retry_after)
+                    wake_on_finish = False
+                else:
+                    delay = random.uniform(45, 60)
+                    wake_on_finish = True
             except urllib.error.HTTPError as exc:
                 wake_on_finish=False
                 LOG.warning("Claim failed: HTTP %s",exc.code)
@@ -555,14 +556,16 @@ def main():
                     STOP.set()
                     raise SystemExit("Executor token was rejected or revoked")
                 quota_delay=claim_retry_delay(exc)
-                idle=quota_delay if quota_delay is not None else min(300,idle*1.5)
+                failure_delay = quota_delay if quota_delay is not None else min(300, failure_delay * 1.5)
+                delay = failure_delay + random.uniform(0, 5)
                 if quota_delay and quota_delay>300:
                     LOG.warning("Cloudflare quota/rate limit: pausing claims for approximately %d seconds",quota_delay)
             except (OSError,ValueError,http.client.HTTPException) as exc:
                 wake_on_finish=False
                 LOG.warning("Connection failed: %s",type(exc).__name__)
-                idle=min(300,idle*1.5)
-            next_claim=time.monotonic()+idle+random.uniform(0,5)
+                failure_delay = min(300, failure_delay * 1.5)
+                delay = failure_delay + random.uniform(0, 5)
+            next_claim = time.monotonic() + delay
     LOG.info("Executor stopped")
 
 

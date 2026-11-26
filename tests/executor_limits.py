@@ -12,11 +12,12 @@ from agent import claim_retry_delay, job_error_message
 import agent
 
 
-class StartIntervalTest(unittest.TestCase):
-    def test_executor_claims_again_at_explicit_server_delay(self):
+class ClaimLoopTest(unittest.TestCase):
+    def poll_times(self, replies, jitter=None):
         stop = threading.Event()
         elapsed = [0]
         polls = []
+        replies = iter(replies)
 
         def advance(duration):
             elapsed[0] += duration
@@ -27,18 +28,48 @@ class StartIntervalTest(unittest.TestCase):
 
             def post(self, path):
                 polls.append((path, elapsed[0]))
-                if len(polls) == 1:
-                    return {'job': None, 'retryAfter': 4, 'retryReason': 'start_interval'}
-                stop.set()
-                return {'job': None}
+                reply = next(replies, None)
+                if reply is None:
+                    stop.set()
+                    return {'job': None}
+                if isinstance(reply, Exception):
+                    raise reply
+                return {'job': None, **reply}
 
         with patch.dict(agent.os.environ, {'YOUTAST_URL': 'https://example.com', 'YOUTAST_TOKEN': 'fixture'}), \
              patch.object(agent, 'API', API), patch.object(agent, 'STOP', stop), \
              patch.object(agent, 'DRAIN', threading.Event()), patch.object(stop, 'wait', side_effect=advance), \
-             patch.object(agent.time, 'monotonic', side_effect=lambda: elapsed[0]), patch.object(agent.signal, 'signal'):
+             patch.object(agent.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+             patch.object(agent.time, 'time', side_effect=lambda: elapsed[0]), patch.object(agent.signal, 'signal'), \
+             patch.object(agent.random, 'uniform', side_effect=jitter or (lambda low, _: low)):
             agent.main()
+        return polls
 
+    def test_executor_claims_again_at_explicit_server_delay(self):
+        polls = self.poll_times([{'retryAfter': 4, 'retryReason': 'start_interval'}])
         self.assertEqual(polls, [('/api/executor/claim', 0), ('/api/executor/claim', 4)])
+
+    def test_empty_queue_polls_within_45_to_60_seconds_without_backoff(self):
+        for choose, delay in [(lambda low, _: low, 45), (lambda _, high: high, 60)]:
+            with self.subTest(delay=delay):
+                polls = self.poll_times([{'retryAfter': 60}] * 3, jitter=choose)
+                self.assertEqual([at for _, at in polls], [0, delay, 2 * delay, 3 * delay])
+
+    def test_paused_and_cooling_executors_still_check_for_resume(self):
+        polls = self.poll_times([
+            {'retryAfter': 60, 'execution': {'paused': True}},
+            {'retryAfter': 85, 'execution': {'cooldown_until': 145}},
+            {'retryAfter': 25, 'execution': {'cooldown_until': 145}},
+        ])
+        self.assertEqual([at for _, at in polls], [0, 60, 120, 145])
+
+    def test_transport_failures_back_off_and_success_resets_the_delay(self):
+        polls = self.poll_times([OSError(), OSError(), {}, OSError()])
+        self.assertEqual([at for _, at in polls], [0, 90, 225, 270, 360])
+
+    def test_upgrade_required_uses_server_delay(self):
+        polls = self.poll_times([{'retryAfter': 300, 'upgradeRequired': True}])
+        self.assertEqual([at for _, at in polls], [0, 300])
 
     def test_executor_can_hold_one_lease_in_each_queue(self):
         stop = threading.Event()
