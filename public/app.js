@@ -40,6 +40,7 @@ let data = null,
   listOffset = 0,
   searchQuery = '',
   taskView = 'current',
+  taskQueue = 'transcode',
   collectionData = null,
   collectionError = '',
   retryAt = 0,
@@ -95,8 +96,10 @@ function showAuth() {
 }
 function readRoute() {
   const [hash,params='']=location.hash.split('?');
-  searchQuery=new URLSearchParams(params).get('q')||'';
-  taskView=new URLSearchParams(params).get('tasks')==='history'?'history':'current';
+  const filters=new URLSearchParams(params);
+  searchQuery=filters.get('q')||'';
+  taskView=filters.get('tasks')==='history'?'history':'current';
+  taskQueue=filters.get('kind')==='scan'?'scan':'transcode';
   const match=hash.match(/^#channel\/([\w-]+)(?:\/(episodes|sources|jobs|archive))?(?:\/(\d+))?$/);
   const list=hash.match(/^#(episodes|jobs)(?:\/(\d+))?$/);
   detailData=null;detailError='';
@@ -115,8 +118,9 @@ async function refresh(includeDashboard=true) {
   const needsDashboard=includeDashboard||!data||Date.now()-dashboardUpdatedAt>=60000;
   // Start the current page alongside bootstrap; route changes reuse dashboard
   // state, while mutations/manual and periodic refreshes still update it.
-  const pagePath=view==='channel'?`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}&tasks=${taskView}`:
-    ['episodes','jobs'].includes(view)?`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}&tasks=${taskView}`:
+  const queueFilter=`&tasks=${taskView}&kind=${taskQueue}`;
+  const pagePath=view==='channel'?`/api/channels/${detailId}/detail?tab=${detailTab}&offset=${detailOffset}&q=${encodeURIComponent(searchQuery)}${detailTab==='jobs'?queueFilter:''}`:
+    ['episodes','jobs'].includes(view)?`/api/${view}?offset=${listOffset}&q=${encodeURIComponent(searchQuery)}${view==='jobs'?queueFilter:''}`:
     view==='executors'?'/api/execution-policy':null;
   const pageRequest=pagePath?api(pagePath,requestOptions).then(value=>({value}),error=>({error})):Promise.resolve({});
   try {
@@ -132,7 +136,7 @@ async function refresh(includeDashboard=true) {
     if(view==='channel'&&detailData&&(detailOffset!==detailData.page.offset||searchQuery!==detailData.query)){
       detailOffset=detailData.page.offset;
       searchQuery=detailData.query;
-      history.replaceState(history.state,'',channelRoute(detailId,detailTab,detailOffset,searchQuery,taskView));
+      history.replaceState(history.state,'',channelRoute(detailId,detailTab,detailOffset,searchQuery,taskView,taskQueue));
     }
     if(view==='episodes'||view==='jobs'){
       try{
@@ -141,7 +145,7 @@ async function refresh(includeDashboard=true) {
         collectionData=model;collectionError='';
         if(listOffset!==model.page.offset||searchQuery!==model.query){
           listOffset=model.page.offset;searchQuery=model.query;
-          history.replaceState(history.state,'',listRoute(view,listOffset,searchQuery,taskView));
+          history.replaceState(history.state,'',listRoute(view,listOffset,searchQuery,taskView,taskQueue));
         }
       }catch(e){if(route!==location.hash){refreshAgain=true;return;}if(e.status===401)throw e;collectionData=null;collectionError=e.message;}
     }
@@ -211,7 +215,7 @@ $('#content').addEventListener('submit',async event=>{
   if(event.target.matches('[data-list-search]')){
     event.preventDefault();
     const query=String(new FormData(event.target).get('q')||'').trim();
-    const hash=view==='channel'?channelRoute(detailId,detailTab,0,query,taskView):listRoute(view,0,query,taskView);
+    const hash=view==='channel'?channelRoute(detailId,detailTab,0,query,taskView,taskQueue):listRoute(view,0,query,taskView,taskQueue);
     if(location.hash!==hash)location.hash=hash;else await refresh();
     return;
   }
@@ -219,7 +223,7 @@ $('#content').addEventListener('submit',async event=>{
   event.preventDefault();const form=new FormData(event.target),button=event.submitter;
   if(button)button.disabled=true;
   try {
-   const payload={concurrency:Number(form.get('concurrency')),start_interval:Number(form.get('start_interval')),request_interval:Number(form.get('request_interval')),download_wait:Number(form.get('download_wait')),cooldown_seconds:Number(form.get('cooldown_minutes'))*60,paused:form.get('paused')==='true'};
+   const payload={concurrency:Number(form.get('concurrency')),start_interval:Number(form.get('start_interval')),scan_concurrency:Number(form.get('scan_concurrency')),scan_start_interval:Number(form.get('scan_start_interval')),request_interval:Number(form.get('request_interval')),download_wait:Number(form.get('download_wait')),cooldown_seconds:Number(form.get('cooldown_minutes'))*60,paused:form.get('paused')==='true'};
    await api('/api/execution-policy',{method:'POST',body:JSON.stringify(payload)});await refresh();toast('请求控制已保存，后续任务生效');
   }catch(e){toast(e.message);}finally{if(button)button.disabled=false;}
   return;
@@ -437,7 +441,7 @@ async function bulkTaskAction(action,button) {
  const ids=action.endsWith('-one')?[button.dataset.id]:[...$('#content').querySelectorAll('[data-failed-job]:checked')].map(e=>e.value);
  const all=action.endsWith('-all');
  if(!all&&!ids.length)return;
- const payload={action:operation,...(all?{all:true}:{ids}),query:searchQuery,...(view==='channel'?{channel_id:detailId}:{})};
+ const payload={action:operation,kind:taskQueue,...(all?{all:true}:{ids}),query:searchQuery,...(view==='channel'?{channel_id:detailId}:{})};
  button.disabled=true;
  try {
   const preview=await api('/api/jobs/bulk/preview',{method:'POST',body:JSON.stringify(payload)});
@@ -476,7 +480,7 @@ $("#content").addEventListener("click", async (event) => {
     }
     if(action.startsWith('tasks-')){await bulkTaskAction(action,button);return;}
     if(action==='clear-search'){
-      location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView):listRoute(view,0,'',taskView);
+      location.hash=view==='channel'?channelRoute(detailId,detailTab,0,'',taskView,taskQueue):listRoute(view,0,'',taskView,taskQueue);
       return;
     }
     if(action==='execution-resume') {await api('/api/execution-policy/resume',{method:'POST'});await refresh();toast('已解除账号暂停和冷却');return;}

@@ -18,7 +18,7 @@ const entry={video_id:'replay00001',title:'Processed live replay',duration:20,pu
 try{
  const registered=await api('/api/auth/register',{username:'replays_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});cookie=registered.r.headers.get('set-cookie').split(';')[0];
  accounts.push({id:registered.body.user.id,username:'replays_'+suffix});
- await api('/api/execution-policy',{concurrency:3,start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
+ await api('/api/execution-policy',{concurrency:3,start_interval:0,scan_concurrency:3,scan_start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
  cid=(await api('/api/channels',{title:'Live lifecycle'},{},201)).body.id;
  machine=(await api('/api/executors',{name:'replay fixture'},{},201)).body;
  await api(`/api/channels/${cid}/sources`,{urls:['https://www.youtube.com/live/replay00001']},{},201);

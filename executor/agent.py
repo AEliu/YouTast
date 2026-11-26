@@ -518,18 +518,19 @@ def main():
     if os.environ.get("YOUTAST_POT_PROVIDER_HOME"):
         LOG.info("Local PO Token provider configured for YouTube downloads")
     running,capacity,next_claim,wake_on_finish=set(),1,0,False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3,thread_name_prefix='youtast-job') as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6,thread_name_prefix='youtast-job') as pool:
         while not STOP.is_set() and not DRAIN.is_set():
             previous=len(running)
             running={future for future in running if not future.done()}
             if len(running)<previous and wake_on_finish:next_claim=min(next_claim,time.monotonic())
             remaining=next_claim-time.monotonic()
-            if remaining>0 or len(running)>=3:
+            if remaining>0 or len(running)>=capacity:
                 STOP.wait(min(1,max(.05,remaining)) if remaining>0 else 1)
                 continue
             try:
                 result = api.post("/api/executor/claim")
-                capacity=max(1,min(3,int(result.get('execution',{}).get('concurrency',1))))
+                policy=result.get('execution',{})
+                capacity=max(1,min(6,int(policy.get('concurrency',1))+int(policy.get('scan_concurrency',0))))
                 if result["job"]:
                     idle=60
                     LOG.info("Processing %s job %s",result['job']['kind'],result['job']['id'])

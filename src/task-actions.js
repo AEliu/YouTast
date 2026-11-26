@@ -1,8 +1,13 @@
 import {now,requireValue} from './lib.js';
-import {taskStateSql} from './task-view.js';
+import {taskKindSql,taskStateSql} from './task-view.js';
 
-export function taskSearch(query,channelOnly=false) {
+export function taskSearch(query,channelOnly=false,kind=null) {
  if(!query)return {sql:'1=1',values:[]};
+ if(kind==='scan'){
+  const values=[query,encodeURIComponent(query.toWellFormed())];
+  if(!channelOnly)values.push(query);
+  return {sql:`(instr(lower(COALESCE(s.url,'')),lower(?))>0 OR instr(lower(COALESCE(s.url,'')),lower(?))>0${channelOnly?'':" OR instr(lower(c.title),lower(?))>0"})`,values};
+ }
  return channelOnly?
   {sql:'instr(lower(COALESCE(e.title,c.title)),lower(?))>0',values:[query]}:
   {sql:"(instr(lower(COALESCE(e.title,'')),lower(?))>0 OR instr(lower(c.title),lower(?))>0)",values:[query,query]};
@@ -10,7 +15,8 @@ export function taskSearch(query,channelOnly=false) {
 
 async function selection(env,user,input) {
  requireValue(input&&typeof input==='object'&&!Array.isArray(input),400,'批量操作参数无效');
- requireValue(Object.keys(input).every(k=>['action','ids','all','channel_id','query','expected_count','expected_matched'].includes(k)),400,'批量操作包含未知参数');
+ requireValue(Object.keys(input).every(k=>['action','ids','all','channel_id','query','kind','expected_count','expected_matched'].includes(k)),400,'批量操作包含未知参数');
+ requireValue(input.kind===undefined||input.kind==='scan'||input.kind==='transcode',400,'任务队列无效');
  requireValue(['retry','dismiss'].includes(input.action),400,'批量操作无效');
  const selected=Array.isArray(input.ids);
  requireValue(selected?input.all===undefined&&input.ids.length>0&&input.ids.length<=80&&input.ids.every(id=>typeof id==='string'&&/^[\w-]{1,100}$/.test(id))&&new Set(input.ids).size===input.ids.length:input.all===true&&input.ids===undefined,400,'请选择任务或明确操作全部匹配的失败任务');
@@ -21,12 +27,12 @@ async function selection(env,user,input) {
   const own=await env.DB.prepare('SELECT id FROM channels WHERE id=? AND user_id=?').bind(input.channel_id,user.id).first();
   requireValue(own,404,'频道不存在');
  }
- const search=taskSearch(query,!!input.channel_id);
+ const search=taskSearch(query,!!input.channel_id,input.kind);
  const values=[user.id,user.id,...(input.channel_id?[input.channel_id]:[]),...search.values,...(selected?input.ids:[])];
  const cte=`WITH matched AS MATERIALIZED (
   SELECT j.id,j.kind,j.source_id,j.created_at FROM jobs j JOIN channels c ON c.id=j.channel_id
-  LEFT JOIN episodes e ON e.id=j.episode_id
-  WHERE j.user_id=? AND c.user_id=? AND ${taskStateSql()}='failed'
+  LEFT JOIN episodes e ON e.id=j.episode_id LEFT JOIN sources s ON s.id=j.source_id AND s.channel_id=j.channel_id
+  WHERE j.user_id=? AND c.user_id=? AND ${taskKindSql(input.kind)} AND ${taskStateSql()}='failed'
   ${input.channel_id?'AND j.channel_id=?':''} AND ${search.sql}
   ${selected?`AND j.id IN(${input.ids.map(()=>'?').join(',')})`:''}
  ), ranked AS (

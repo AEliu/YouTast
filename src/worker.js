@@ -314,10 +314,15 @@ async function api(request, env, url, ctx) {
     if(method==='GET')return json(await executionPolicy(env,user.id));
     if(method==='POST') {
       const b=validateExecution(await body(request));
-      await stmt(env,`INSERT INTO execution_policy(user_id,concurrency,start_interval,request_interval,download_wait,cooldown_seconds,paused)
-       VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET concurrency=excluded.concurrency,start_interval=excluded.start_interval,
+      const scanConcurrency=b.scan_concurrency??null,scanInterval=b.scan_start_interval??null;
+      await stmt(env,`INSERT INTO execution_policy(user_id,concurrency,start_interval,request_interval,download_wait,cooldown_seconds,paused,scan_concurrency,scan_start_interval)
+       VALUES(?,?,?,?,?,?,?,COALESCE(?,1),COALESCE(?,15)) ON CONFLICT(user_id) DO UPDATE SET concurrency=excluded.concurrency,start_interval=excluded.start_interval,
        request_interval=excluded.request_interval,download_wait=excluded.download_wait,cooldown_seconds=excluded.cooldown_seconds,paused=excluded.paused,
-       next_start_at=MAX(0,next_start_at-start_interval+excluded.start_interval)`,user.id,b.concurrency,b.start_interval,b.request_interval,b.download_wait,b.cooldown_seconds,b.paused?1:0).run();
+       next_start_at=MAX(0,next_start_at-start_interval+excluded.start_interval),
+       scan_concurrency=COALESCE(?,scan_concurrency),scan_start_interval=COALESCE(?,scan_start_interval),
+       scan_next_start_at=MAX(0,scan_next_start_at-scan_start_interval+COALESCE(?,scan_start_interval))`,
+       user.id,b.concurrency,b.start_interval,b.request_interval,b.download_wait,b.cooldown_seconds,b.paused?1:0,
+       scanConcurrency,scanInterval,scanConcurrency,scanInterval,scanInterval).run();
       return json({ok:true,policy:await executionPolicy(env,user.id)});
     }
   }
@@ -819,8 +824,8 @@ async function executorApi(request, env, url) {
       ),
     ]);
     const policy=await executionPolicy(env,executor.user_id);
-    if(policy.paused||policy.next_start_at>t||policy.cooldown_until>t)
-      return json({job:null,...claimWait(policy,t),execution:policy});
+    if(policy.paused||policy.cooldown_until>t)
+      return json({job:null,...await claimWait(env,executor.user_id,policy,t),execution:policy});
     const token = secret();
     let job;
     try {job = await stmt(
@@ -828,6 +833,10 @@ async function executorApi(request, env, url) {
       `UPDATE jobs SET status='running',encoding_profile=COALESCE((SELECT encoding_profile FROM episodes WHERE id=jobs.episode_id AND object_key IS NOT NULL),(SELECT audio_profile FROM channel_preferences WHERE id=jobs.channel_id)),attempts=attempts+1,error=NULL,lease_token=?,executor_id=?,lease_until=?,updated_at=? WHERE id=(
         SELECT candidate.id FROM jobs candidate LEFT JOIN episodes target ON target.id=candidate.episode_id JOIN channel_preferences policy ON policy.id=candidate.channel_id
         WHERE candidate.user_id=? AND candidate.status='queued' AND candidate.available_at<=?
+        AND (CASE WHEN candidate.kind='scan' THEN ? ELSE ? END)<=?
+        AND (SELECT COUNT(*) FROM jobs active
+          WHERE active.user_id=candidate.user_id AND active.kind=candidate.kind AND active.status='running' AND active.lease_until>?)
+          <CASE WHEN candidate.kind='scan' THEN ? ELSE ? END
         AND ((policy.latest_limit=0 AND policy.scan_limit IN(10,30,50,100)) OR ?=1)
         AND (candidate.kind!='scan' OR ?=1 OR NOT EXISTS(SELECT 1 FROM sources replay WHERE replay.id=candidate.source_id AND (replay.waiting_replay=1 OR replay.url LIKE '%/streams')))
         AND (candidate.kind!='scan' OR NOT EXISTS(SELECT 1 FROM sources disabled WHERE disabled.id=candidate.source_id AND disabled.paused=1))
@@ -842,7 +851,7 @@ async function executorApi(request, env, url) {
           AND running.lease_until>? AND active.video_id=target.video_id)
           AND NOT EXISTS(SELECT 1 FROM episodes completed JOIN channels owner ON owner.id=completed.channel_id
             WHERE owner.user_id=candidate.user_id AND completed.video_id=target.video_id AND completed.object_key IS NOT NULL AND completed.encoding_profile=policy.audio_profile))
-        ORDER BY candidate.created_at,candidate.id LIMIT 1) AND status='queued'
+        ORDER BY (candidate.kind='scan'),candidate.created_at,candidate.id LIMIT 1) AND status='queued'
         AND EXISTS(SELECT 1 FROM executors WHERE id=? AND paused=0) RETURNING *`,
       token,
       executor.id,
@@ -850,6 +859,12 @@ async function executorApi(request, env, url) {
       t,
       executor.user_id,
       t,
+      policy.scan_next_start_at,
+      policy.next_start_at,
+      t,
+      t,
+      policy.scan_concurrency,
+      policy.concurrency,
       request.headers.get('x-executor-content-control')==='1'?1:0,
       request.headers.get('x-executor-replay-control')==='1'?1:0,
       request.headers.get('x-executor-content-control')==='1'?1:0,
@@ -861,9 +876,9 @@ async function executorApi(request, env, url) {
     ).first();}catch(error){
       if(!String(error.message).includes('execution_throttled'))throw error;
       const current=await executionPolicy(env,executor.user_id);
-      return json({job:null,...claimWait(current,t,15),execution:current});
+      return json({job:null,...await claimWait(env,executor.user_id,current,t,15),execution:current});
     }
-    if (!job) return json({ job: null, retryAfter: 60,execution:policy });
+    if (!job) return json({job:null,...await claimWait(env,executor.user_id,policy,t),execution:policy});
     const source = job.source_id
       ? await stmt(
           env,

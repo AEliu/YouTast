@@ -20,7 +20,7 @@ try{
  let r=await api('/api/auth/register',{username:'formats_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});cookie=r.r.headers.get('set-cookie').split(';')[0];
  accounts.push({id:r.body.user.id,username:'formats_'+suffix});
  assert.equal((await api('/api/settings')).body.settings.audio_mode,'source');
- await api('/api/execution-policy',{concurrency:3,start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
+ await api('/api/execution-policy',{concurrency:3,start_interval:0,scan_concurrency:3,scan_start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
  machine=(await api('/api/executors',{name:'formats'},{},201)).body;
  const c=await channel();await add(c,'aacvideo001');await discover('aacvideo001');
  assert.equal(await claim(false),null,'Old executor cannot claim M4A conversion');

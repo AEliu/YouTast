@@ -40,6 +40,34 @@ class StartIntervalTest(unittest.TestCase):
 
         self.assertEqual(polls, [('/api/executor/claim', 0), ('/api/executor/claim', 4)])
 
+    def test_executor_can_hold_one_lease_in_each_queue(self):
+        stop = threading.Event()
+        audio_started = threading.Event()
+        jobs = iter([{'id': 'scan', 'kind': 'scan'}, {'id': 'audio', 'kind': 'transcode'}])
+        overlap = []
+
+        class API:
+            def __init__(self, *_):
+                pass
+
+            def post(self, _):
+                return {'job': next(jobs), 'execution': {'concurrency': 1, 'scan_concurrency': 1}}
+
+        def process(_, job):
+            if job['kind'] == 'scan':
+                overlap.append(audio_started.wait(3))
+            else:
+                audio_started.set()
+                stop.set()
+
+        with patch.dict(agent.os.environ, {'YOUTAST_URL': 'https://example.com', 'YOUTAST_TOKEN': 'fixture'}), \
+             patch.object(agent, 'API', API), patch.object(agent, 'process_job', side_effect=process), \
+             patch.object(agent, 'STOP', stop), patch.object(agent, 'DRAIN', threading.Event()), \
+             patch.object(agent.signal, 'signal'):
+            agent.main()
+
+        self.assertEqual(overlap, [True])
+
 
 class QuotaDelayTest(unittest.TestCase):
     def test_reset_propagation_does_not_delay_another_day(self):

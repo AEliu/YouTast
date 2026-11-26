@@ -42,7 +42,7 @@ test('current tasks exclude completed and intentional stops; history, counts, se
   await assert.rejects(detail('tasks=invalid'));await assert.rejects(collection('tasks=invalid'));
   const options={escape:String,sortNames:{},statusNames:{queued:'等待处理',running:'处理中',failed:'失败',done:'已完成',stopped:'已停止'}};
   const html=renderChannelDetail(first,options);
-  assert.match(html,/处理任务 3/);assert.match(html,/历史记录 45/);assert.match(html,/已停止/);assert.doesNotMatch(html,/data-action="retry"/);
+  assert.match(html,/音频生成/);assert.match(html,/来源扫描/);assert.match(html,/当前任务 3/);assert.match(html,/历史记录 45/);assert.match(html,/已停止/);assert.doesNotMatch(html,/data-action="retry"/);
   const globalHtml=renderCollection(await collection('tasks=history'),'jobs',{...options,channels:[channel]});
   assert.match(globalHtml,/tasks=history/);assert.doesNotMatch(globalHtml,/data-action="retry"/);
   db.exec("UPDATE jobs SET status='done' WHERE channel_id='c' AND status IN('queued','running');UPDATE jobs SET status='queued',error=NULL WHERE id='failed'");
@@ -57,4 +57,6 @@ test('history routes preserve search and page while non-job links drop task filt
  assert.equal(listRoute('jobs',30,'hello world','history'),'#jobs/30?q=hello%20world&tasks=history');
  assert.equal(channelRoute('c','jobs',30,'测试','history'),'#channel/c/jobs/30?q=%E6%B5%8B%E8%AF%95&tasks=history');
  assert.equal(channelRoute('c','episodes',0,'','history'),'#channel/c/episodes/0');
+ assert.equal(listRoute('jobs',30,'creator','history','scan'),'#jobs/30?q=creator&tasks=history&kind=scan');
+ assert.equal(channelRoute('c','jobs',30,'','history','scan'),'#channel/c/jobs/30?tasks=history&kind=scan');
 });

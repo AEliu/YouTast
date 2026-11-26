@@ -50,7 +50,7 @@ try {
     password: randomBytes(32).toString("hex"),
     invite: process.env.TEST_INVITE || "local-job-recovery",
   });
-  await api('/api/execution-policy',{concurrency:3,start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
+  await api('/api/execution-policy',{concurrency:3,start_interval:0,scan_concurrency:3,scan_start_interval:0,request_interval:0,download_wait:0,cooldown_seconds:60,paused:false});
   channel = (await api("/api/channels", { title: "Recovery regression" })).id;
   const executor = await api("/api/executors", { name: "Recovery regression" });
   token = executor.token;

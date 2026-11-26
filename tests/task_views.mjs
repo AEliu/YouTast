@@ -46,6 +46,17 @@ try{
  await api(`/api/jobs/${ids.failed}/retry`,{});current=await detail('');assert.equal(current.counts.failed,0);assert.equal(current.counts.queued,2);assert.equal(current.counts.jobs,3);
  await sql(`UPDATE jobs SET status='done',error=NULL WHERE channel_id=${q(channel)} AND status IN('queued','running')`);
  const empty=await detail('offset=999');assert.equal(empty.counts.jobs,0);assert.equal(empty.page.total,0);assert.equal(empty.page.offset,0);assert.equal(empty.counts.history,43);
+ await sql(`INSERT INTO jobs(id,user_id,channel_id,kind,status,error,available_at,created_at,updated_at)
+  VALUES(${q('audio_'+suffix)},${q(user.id)},${q(channel)},'transcode','failed','Audio fixture',0,200,200),
+        (${q('scan_'+suffix)},${q(user.id)},${q(channel)},'scan','failed','Scan fixture',0,200,200)`);
+ for(const kind of ['scan','transcode']){
+  const list=(await api('/api/jobs?kind='+kind)).body;
+  assert.deepEqual(list.jobs.map(j=>j.kind),[kind]);assert.equal(list.counts.failed,1);
+  assert.deepEqual((await detail('kind='+kind)).jobs.map(j=>j.kind),[kind]);
+  assert.equal((await api('/api/jobs/bulk/preview',{action:'dismiss',all:true,kind,channel_id:channel})).body.count,1);
+ }
+ assert.equal((await detail('kind=transcode&tasks=history')).page.total,0,'Scan history does not fill the audio tab');
+ await api('/api/jobs?kind=unknown',null,400);
  if(keep){
   await sql(`UPDATE jobs SET status='queued' WHERE id=${q(ids.queued)};UPDATE jobs SET status='running' WHERE id=${q(ids.running)};UPDATE jobs SET status='failed',error='Genuine conversion failure' WHERE id=${q(ids.failed)}`);
   await mkdir('test-results',{recursive:true});await writeFile('test-results/task-view-ui.json',JSON.stringify({origin,username,password,channel,accounts,ids}));

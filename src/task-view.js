@@ -14,6 +14,12 @@ export function taskView(url) {
  requireValue(['current','history'].includes(view),400,'任务分类无效');
  return view;
 }
+export function taskKind(url) {
+ const kind=url.searchParams.get('kind');
+ requireValue(kind===null||kind==='scan'||kind==='transcode',400,'任务队列无效');
+ return kind;
+}
+export const taskKindSql=kind=>kind==='scan'?"j.kind='scan'":kind==='transcode'?"j.kind='transcode'":'1=1';
 export function taskStateSql(alias='j') {
  const reasons=stoppedReasons.map(s=>"'"+s.replaceAll("'","''")+"'").join(',');
  return `CASE WHEN ${alias}.dismissed_at IS NOT NULL THEN 'dismissed' WHEN ${alias}.status='failed' AND ${alias}.error IN(${reasons}) THEN 'stopped' ELSE ${alias}.status END`;

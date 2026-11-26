@@ -1,5 +1,5 @@
 import {taskSearch} from './task-actions.js';
-import {taskView,taskCondition,taskStateSql,taskCountsSql} from './task-view.js';
+import {taskView,taskCondition,taskStateSql,taskCountsSql,taskKind,taskKindSql} from './task-view.js';
 import {windowCte} from './window-query.js';
 import {requireValue} from './lib.js';
 import {effectiveSortMode,episodeOrderSql} from './sorting.js';
@@ -9,7 +9,7 @@ export async function channelDetail(env,channel,url) {
  const tab=url.searchParams.get('tab')||'episodes';
  const options=listOptions(url),{query}=options;
  requireValue(['episodes','sources','jobs','archive'].includes(tab),400,'详情分类无效');
- const tasks=tab==='jobs'?taskView(url):'current';
+ const tasks=tab==='jobs'?taskView(url):'current',queue=tab==='jobs'?taskKind(url):null;
  const window=windowCte('id=?');
  const visible="id IN(SELECT id FROM scoped_window WHERE channel_id=?)";
  const filter=tab==='archive'?`NOT (${visible}) AND object_key IS NOT NULL`:visible;
@@ -19,7 +19,7 @@ export async function channelDetail(env,channel,url) {
  const queries=[
   env.DB.prepare(`${window} SELECT COUNT(*) episodes,COALESCE(SUM(object_key IS NOT NULL),0) ready FROM episodes WHERE channel_id=? AND ${visible}`).bind(channel.id,channel.id,channel.id),
   env.DB.prepare(`${window} SELECT COUNT(*) archived FROM episodes WHERE channel_id=? AND NOT (${visible}) AND object_key IS NOT NULL`).bind(channel.id,channel.id,channel.id),
-  env.DB.prepare(`SELECT ${taskCountsSql()} FROM jobs j WHERE j.channel_id=?`).bind(channel.id),
+  env.DB.prepare(`SELECT ${taskCountsSql()} FROM jobs j WHERE j.channel_id=? AND ${taskKindSql(queue)}`).bind(channel.id),
   env.DB.prepare('SELECT * FROM sources WHERE channel_id=? ORDER BY sort_order,id').bind(channel.id),
  ];
  if(tab==='episodes'||tab==='archive'){
@@ -31,9 +31,9 @@ export async function channelDetail(env,channel,url) {
   queries.push(env.DB.prepare(`${window}, visible AS(${rows}) SELECT COUNT(*) total FROM visible`).bind(channel.id,channel.id,channel.id,...search.values));
  }
  if(tab==='jobs'){
-  const condition=taskSearch(query,true);
+  const condition=taskSearch(query,true,queue);
   const values=[channel.id,...condition.values];
-  const jobs=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,e.title episode_title FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id WHERE j.channel_id=? AND ${taskCondition(tasks)} AND ${condition.sql}`;
+  const jobs=`SELECT j.id,j.kind,j.status,${taskStateSql()} display_status,j.attempts,j.reused,CASE WHEN j.status='done' THEN NULL ELSE j.error END error,j.created_at,j.updated_at,e.title episode_title,s.url source_url FROM jobs j JOIN channels c ON c.id=j.channel_id LEFT JOIN episodes e ON e.id=j.episode_id LEFT JOIN sources s ON s.id=j.source_id AND s.channel_id=j.channel_id WHERE j.channel_id=? AND ${taskKindSql(queue)} AND ${taskCondition(tasks)} AND ${condition.sql}`;
   queries.push(env.DB.prepare(`WITH visible AS(${jobs}) SELECT * FROM visible ORDER BY created_at DESC,id DESC ${pageSql}`).bind(...values,...pageBindings(options)));
   queries.push(env.DB.prepare(`WITH visible AS(${jobs}) SELECT COUNT(*) total,COALESCE(SUM(display_status='failed'),0) failed_total FROM visible`).bind(...values));
  }
@@ -46,5 +46,5 @@ export async function channelDetail(env,channel,url) {
   ?(await env.DB.batch([episodePage(page.offset)]))[0].results:episodePage?result[4].results:[];
  return {channel:{...channel,episode_count:counts.ready,archived_count:counts.archived},counts,sources,
   episodes,jobs:tab==='jobs'?result[4].results:[],
-  tab,...(tab==='jobs'?{tasks,failedTotal:result[5].results[0].failed_total}:{}),query:tab==='sources'?'':query,page};
+  tab,...(tab==='jobs'?{tasks,kind:queue,failedTotal:result[5].results[0].failed_total}:{}),query:tab==='sources'?'':query,page};
 }

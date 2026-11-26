@@ -16,7 +16,8 @@ try {
  const user=await api('/api/auth/register',{username:'throttle_'+suffix,password:randomBytes(24).toString('hex'),invite:'local-integration-invite-only'});
  accounts.push({id:user.user.id,username:'throttle_'+suffix});
  const defaults=await api('/api/execution-policy');assert.equal(defaults.concurrency,1);assert.equal(defaults.start_interval,60);assert.equal(defaults.request_interval,2);assert.equal(defaults.download_wait,10);
- const config={concurrency:1,start_interval:60,request_interval:2,download_wait:10,cooldown_seconds:60,paused:false};
+ assert.equal(defaults.scan_concurrency,1);assert.equal(defaults.scan_start_interval,15);
+ const config={concurrency:1,start_interval:60,scan_concurrency:1,scan_start_interval:0,request_interval:2,download_wait:10,cooldown_seconds:60,paused:false};
  cid=(await api('/api/channels',{title:'Execution control fixture'},{status:201})).id;
  await api(`/api/channels/${cid}/sources`,{urls:Array.from({length:8},(_,i)=>`https://www.youtube.com/watch?v=limit${i}abcde`)},{status:201});
  for(let i=0;i<2;i++)machines.push(await api('/api/executors',{name:'throttle machine '+i},{status:201}));
@@ -34,7 +35,7 @@ try {
  assert.equal(job.options.execution.request_interval,2);await finish(owner,job);
  let denied=await claim(machines[1]);assert.equal(denied.job,null);assert.ok(denied.retryAfter>0,'Start interval survives completion');
  assert.equal(denied.retryReason,'start_interval','A known start delay is distinguishable from an empty queue');
- await api('/api/execution-policy',{...config,concurrency:2,start_interval:0});
+ await api('/api/execution-policy',{...config,scan_concurrency:2,start_interval:0});
  const second=await Promise.all([0,1,0,1].map(i=>claim(machines[i])));assert.equal(second.filter(r=>r.job).length,2,'Atomic shared concurrent cap');
  const active=second.map((r,i)=>r.job?{j:r.job,e:machines[i%2]}:null).filter(Boolean);
  await api('/api/execution-policy',{...config,concurrency:1,start_interval:0,paused:true});assert.equal((await claim(machines[0])).job,null);
@@ -48,7 +49,7 @@ try {
  await api('/api/execution-policy/resume',{});job=(await claim(machines[1])).job;assert.ok(job);await finish(machines[1],job);
  const [firstMachine,secondMachine]=machines;
  const machineRoute=`/api/executors/${firstMachine.id}`;
- await api('/api/execution-policy',{...config,concurrency:2,start_interval:0});
+ await api('/api/execution-policy',{...config,scan_concurrency:2,start_interval:0});
  const inFlight=(await claim(firstMachine)).job;assert.ok(inFlight);
  assert.deepEqual(await api(machineRoute,{paused:true}),{ok:true,paused:true});
  assert.equal((await api(machineRoute,{paused:true})).paused,true,'Pause is idempotent');
@@ -79,9 +80,23 @@ try {
  job=(await claim(firstMachine)).job;assert.ok(job,'The original key can claim again after resuming');
  await finish(firstMachine,job);
  assert.equal((await statusFor(firstMachine)).paused,false);
+ await api('/api/execution-policy',config);
+ await api(`/api/channels/${cid}/sources`,{urls:['https://www.youtube.com/watch?v=split1abcde','https://www.youtube.com/watch?v=split2abcde','https://www.youtube.com/watch?v=split3abcde']},{status:201});
+ const seed=(await claim(firstMachine)).job;
+ assert.equal(seed.kind,'scan');
+ await api(`/api/executor/jobs/${seed.id}/scan`,{entries:[{video_id:new URL(seed.source.url).searchParams.get('v'),title:'Independent audio',duration:30}]},
+  {headers:{...auth(firstMachine),'X-Lease-Token':seed.leaseToken}});
+ await api('/api/execution-policy',{...config,scan_start_interval:15});
+ const audioAuth={...auth(secondMachine),'X-Executor-Audio-Control':'1'};
+ const audio=(await api('/api/executor/claim',{}, {headers:audioAuth})).job;
+ assert.equal(audio.kind,'transcode','Audio can claim during the scan startup delay');
+ const waiting=await claim(firstMachine);assert.equal(waiting.job,null);assert.equal(waiting.retryReason,'start_interval');
+ await sql(`UPDATE execution_policy SET scan_next_start_at=0 WHERE user_id='${user.user.id}'`);
+ const scans=await Promise.all([firstMachine,secondMachine].map(claim));
+ assert.equal(scans.filter(r=>r.job?.kind==='scan').length,1,'A real audio lease does not block one scan, and the scan cap is atomic');
  await api('/api/execution-policy',{...config,concurrency:4},{status:400});await api('/api/execution-policy',{...config,start_interval:-1},{status:400});await api('/api/execution-policy',{...config,request_interval:1.5},{status:400});await api('/api/execution-policy',{...config,user_id:'other'},{status:400});
  await api('/api/execution-policy',config,{headers:{Origin:'https://evil.example'},status:403});
- console.log('PASS: shared limits, account and individual pauses, active leases, key reuse, account isolation and verification cooldown');
+ console.log('PASS: separate queue limits and start spacing, parallel scan/audio, account and machine pauses, stable leases, and isolation');
 }finally{
  try{
  for(const e of machines)try{await fetch(origin+'/api/executors/'+e.id,{method:'DELETE',headers:{Origin:origin,Cookie:cookie}});}catch{}

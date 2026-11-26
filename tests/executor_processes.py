@@ -55,7 +55,7 @@ def main():
         "invite": os.environ.get("TEST_INVITE", "local-integration-invite-only"),
     }) as response:
         cookie = response.headers["Set-Cookie"].split(";")[0]
-    read_json('/api/execution-policy',{'concurrency':3,'start_interval':0,'request_interval':0,'download_wait':0,'cooldown_seconds':60,'paused':False})
+    read_json('/api/execution-policy',{'concurrency':3,'start_interval':0,'scan_concurrency':3,'scan_start_interval':0,'request_interval':0,'download_wait':0,'cooldown_seconds':60,'paused':False})
     channel = read_json("/api/channels", {"title": "Offline executor process test"})["id"]
     executors, processes, log_handles = [], [], []
     try:
